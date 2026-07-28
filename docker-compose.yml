@@ -1,0 +1,19 @@
+services:
+  grounded-motion:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      GROUNDED_MOTION_TRANSPORT: streamable-http
+      GROUNDED_MOTION_HOST: 0.0.0.0
+      GROUNDED_MOTION_PORT: 8000
+      GROUNDED_MOTION_WORKSPACE: /data
+    volumes:
+      - ./workspace:/data
+      - ./models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+

@@ -63,9 +63,10 @@ class GcsCanaryStore:
 
     def read_json(self, name: str) -> tuple[dict[str, Any], int]:
         blob = self.bucket.blob(name)
-        payload = json.loads(blob.download_as_text())
         blob.reload()
-        return payload, int(blob.generation or 0)
+        generation = int(blob.generation or 0)
+        payload = json.loads(blob.download_as_text(if_generation_match=generation))
+        return payload, generation
 
     def read_json_or_none(self, name: str) -> tuple[dict[str, Any] | None, int | None]:
         blob = self.bucket.blob(name)
@@ -115,6 +116,8 @@ class GcsCanaryStore:
             raise ActiveExecutionError(str(winner.get("execution_id", "unknown"))) from exc
 
     def set_lock_state(self, execution_id: str, state: str) -> None:
+        from google.api_core.exceptions import PreconditionFailed
+
         lock, generation = self.read_json("locks/vanguard-canary.json")
         if lock.get("execution_id") != execution_id or generation is None:
             return
@@ -122,7 +125,7 @@ class GcsCanaryStore:
         lock["updated_unix"] = time.time()
         try:
             self.write_json("locks/vanguard-canary.json", lock, if_generation_match=generation)
-        except Exception:
+        except PreconditionFailed:
             # Status/result remain authoritative even if the convenience lock races.
             return
 
@@ -178,7 +181,7 @@ class CloudRunJobLauncher:
     job: str
 
     @classmethod
-    def from_env(cls) -> "CloudRunJobLauncher":
+    def from_env(cls) -> CloudRunJobLauncher:
         return cls(
             project=required_env("GOOGLE_CLOUD_PROJECT"),
             region=os.environ.get("GROUNDED_MOTION_REGION", "us-central1"),

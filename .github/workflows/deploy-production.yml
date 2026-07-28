@@ -1,0 +1,155 @@
+name: Deploy production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: grounded-motion-production
+  cancel-in-progress: false
+
+env:
+  PROJECT: grounded-motion-dclar
+  REGION: us-central1
+  REPOSITORY: grounded-motion
+  IMAGE: grounded-motion
+  SERVICE: grounded-motion-mcp
+  JOB: grounded-motion-vanguard-canary
+  BUCKET: grounded-motion-dclar-canary
+  CONTROL_SERVICE_ACCOUNT: grounded-motion-control@grounded-motion-dclar.iam.gserviceaccount.com
+  WORKER_SERVICE_ACCOUNT: grounded-motion-worker@grounded-motion-dclar.iam.gserviceaccount.com
+  CHECKPOINT_SHA256: f840f2044fe46cb3821b7cea86be83e1f6cba406ccd28f5475ac010412dcda95
+  OAUTH_ISSUER: https://us-central1-home-center-dclar.cloudfunctions.net/homeCenterMcp
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require immutable main source
+        run: |
+          test "$GITHUB_REF" = refs/heads/main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --short)"
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v3
+      - name: Configure Artifact Registry
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+      - name: Build and push exact commit image
+        id: image
+        run: |
+          image="${REGION}-docker.pkg.dev/${PROJECT}/${REPOSITORY}/${IMAGE}:${GITHUB_SHA}"
+          docker build \
+            --build-arg "GROUNDED_MOTION_REVISION=${GITHUB_SHA}" \
+            --build-arg "GROUNDED_MOTION_CHECKPOINT_SHA256=${CHECKPOINT_SHA256}" \
+            --tag "$image" .
+          docker push "$image"
+          digest="$(docker inspect --format='{{index .RepoDigests 0}}' "$image" | cut -d@ -f2)"
+          test -n "$digest"
+          echo "uri=${image}" >> "$GITHUB_OUTPUT"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+      - name: Deploy one-task L4 GPU job
+        run: |
+          gcloud run jobs deploy "$JOB" \
+            --project "$PROJECT" --region "$REGION" \
+            --image "${{ steps.image.outputs.uri }}" \
+            --service-account "$WORKER_SERVICE_ACCOUNT" \
+            --command grounded-motion-canary-worker \
+            --gpu 1 --gpu-type nvidia-l4 --no-gpu-zonal-redundancy \
+            --cpu 4 --memory 16Gi \
+            --tasks 1 --parallelism 1 --max-retries 0 --task-timeout 3600s \
+            --set-env-vars "GROUNDED_MOTION_BUCKET=${BUCKET},GROUNDED_MOTION_WORKSPACE=/data,GROUNDED_MOTION_MODEL_CACHE=/models,GROUNDED_MOTION_CHECKPOINT_SHA256=${CHECKPOINT_SHA256},GROUNDED_MOTION_REVISION=${GITHUB_SHA},GROUNDED_MOTION_IMAGE_DIGEST=${{ steps.image.outputs.digest }}" \
+            --quiet
+      - name: Deploy authenticated MCP control service
+        id: service
+        run: |
+          expected_base="https://${SERVICE}-$(gcloud projects describe "$PROJECT" --format='value(projectNumber)').${REGION}.run.app"
+          gcloud run deploy "$SERVICE" \
+            --project "$PROJECT" --region "$REGION" \
+            --image "${{ steps.image.outputs.uri }}" \
+            --service-account "$CONTROL_SERVICE_ACCOUNT" \
+            --allow-unauthenticated \
+            --cpu 1 --memory 1Gi --concurrency 20 --min 0 --max 2 --timeout 60 \
+            --port 8080 \
+            --set-env-vars "GROUNDED_MOTION_PROFILE=production,GROUNDED_MOTION_BUCKET=${BUCKET},GROUNDED_MOTION_JOB=${JOB},GROUNDED_MOTION_REGION=${REGION},GROUNDED_MOTION_SIGNER_SERVICE_ACCOUNT=${CONTROL_SERVICE_ACCOUNT},GROUNDED_MOTION_OAUTH_ISSUER=${OAUTH_ISSUER},GROUNDED_MOTION_RESOURCE=${expected_base}/mcp,GROUNDED_MOTION_REVISION=${GITHUB_SHA},GROUNDED_MOTION_IMAGE_DIGEST=${{ steps.image.outputs.digest }}" \
+            --quiet
+          actual_base="$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" --format='value(status.url)')"
+          test "$actual_base" = "$expected_base"
+          echo "base=${actual_base}" >> "$GITHUB_OUTPUT"
+      - name: Verify OAuth challenge and protected-resource metadata
+        run: |
+          base="${{ steps.service.outputs.base }}"
+          curl --fail --silent --show-error "$base/.well-known/oauth-protected-resource/mcp" > metadata.json
+          python3 - <<'PY'
+          import json, os
+          payload=json.load(open('metadata.json'))
+          expected=os.environ['BASE']+'/mcp'
+          assert payload['resource']==expected, payload
+          assert payload['authorization_servers']==[os.environ['OAUTH_ISSUER']], payload
+          assert payload['scopes_supported']==['grounded-motion:vanguard-canary'], payload
+          PY
+          status="$(curl --silent --output challenge.json --dump-header challenge.headers --write-out '%{http_code}' -X POST "$base/mcp")"
+          test "$status" = 401
+          grep -qi 'resource_metadata=' challenge.headers
+        env:
+          BASE: ${{ steps.service.outputs.base }}
+      - name: Real GPU pre-production canary
+        run: |
+          execution_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+          now="$(date +%s)"
+          export EXECUTION_ID="$execution_id"
+          export NOW="$now"
+          export IMAGE_DIGEST="${{ steps.image.outputs.digest }}"
+          python3 - <<'PY'
+          import json, os
+          payload={
+            'schema':'grounded-motion-vanguard-status/v1',
+            'execution_id':os.environ['EXECUTION_ID'],
+            'state':'queued',
+            'stage':'deployment-gpu-smoke',
+            'pipeline_pass':False,
+            'fixture':'vanguard-walk-v1-vs-walk-sword-carry-v2-attempt-003',
+            'revision':os.environ['GITHUB_SHA'],
+            'image_digest':os.environ['IMAGE_DIGEST'],
+            'created_unix':int(os.environ['NOW']),
+            'updated_unix':int(os.environ['NOW']),
+          }
+          with open('status.json','w') as f: json.dump(payload,f)
+          PY
+          gcloud storage cp status.json "gs://${BUCKET}/executions/${execution_id}/status.json"
+          gcloud storage cp status.json "gs://${BUCKET}/locks/vanguard-canary.json"
+          gcloud run jobs execute "$JOB" --project "$PROJECT" --region "$REGION" \
+            --update-env-vars "GROUNDED_MOTION_EXECUTION_ID=${execution_id}" --wait --quiet
+          gcloud storage cp "gs://${BUCKET}/executions/${execution_id}/result.json" result.json
+          python3 - <<'PY'
+          import json, os
+          payload=json.load(open('result.json'))
+          assert payload['pipeline_pass'] is True, payload
+          assert payload['revision']==os.environ['GITHUB_SHA'], payload
+          assert payload['image_digest']==os.environ['IMAGE_DIGEST'], payload
+          assert payload['backend']['name']=='mmpose', payload
+          assert payload['backend']['model_sha256']==os.environ['CHECKPOINT_SHA256'], payload
+          assert payload['cuda']['available'] is True, payload
+          assert payload['source_structural_pass'] is True, payload
+          assert payload['candidate_structural_pass'] is True, payload
+          print(json.dumps({
+            'execution_id':payload['execution_id'],
+            'pipeline_pass':payload['pipeline_pass'],
+            'mechanical_pass':payload['mechanical_pass'],
+            'revision':payload['revision'],
+            'image_digest':payload['image_digest'],
+          }))
+          PY
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}

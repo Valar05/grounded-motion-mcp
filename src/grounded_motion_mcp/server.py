@@ -121,6 +121,11 @@ async def export_artifacts(
 
 
 def main() -> None:
+    if os.environ.get("GROUNDED_MOTION_PROFILE", "local") == "production":
+        from .production_server import main as production_main
+
+        production_main()
+        return
     transport = os.environ.get("GROUNDED_MOTION_TRANSPORT", "stdio")
     if transport == "stdio":
         mcp.run(transport="stdio")

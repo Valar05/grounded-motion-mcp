@@ -59,6 +59,11 @@ class MMPoseBackend:
             preset.checkpoint_url,
             cache_root.expanduser().resolve(),
         )
+        if checkpoint_sha != preset.checkpoint_sha256:
+            raise MMPoseUnavailable(
+                "Pinned checkpoint SHA-256 mismatch: "
+                f"expected {preset.checkpoint_sha256}, got {checkpoint_sha}"
+            )
         self._config_path = config_path
         self._config_sha = sha256_file(config_path)
         self._checkpoint_path = checkpoint_path

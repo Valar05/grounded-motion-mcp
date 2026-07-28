@@ -6,6 +6,7 @@ ARG GROUNDED_MOTION_CHECKPOINT_SHA256=f840f2044fe46cb3821b7cea86be83e1f6cba406cc
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    PIP_CONSTRAINT=/tmp/grounded-motion-constraints.txt \
     GROUNDED_MOTION_WORKSPACE=/data \
     GROUNDED_MOTION_MODEL_CACHE=/models \
     GROUNDED_MOTION_TRANSPORT=streamable-http \
@@ -26,7 +27,8 @@ RUN apt-get update \
        python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python3 -m pip install --upgrade pip \
+RUN printf 'numpy==1.26.4\n' > "$PIP_CONSTRAINT" \
+    && python3 -m pip install --upgrade pip \
     && python3 -m pip install "numpy==1.26.4" \
     && python3 -m pip install \
        torch==2.1.0 \

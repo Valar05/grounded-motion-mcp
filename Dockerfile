@@ -28,8 +28,8 @@ RUN apt-get update \
 
 RUN python3 -m pip install --upgrade pip \
     && python3 -m pip install \
-       torch==2.4.1 \
-       torchvision==0.19.1 \
+       torch==2.1.0 \
+       torchvision==0.16.0 \
        --index-url https://download.pytorch.org/whl/cu121 \
     && python3 -m pip install openmim==0.3.9 \
     && mim install "mmcv==2.1.0" \

@@ -127,3 +127,38 @@ must be cached and hashed before production use.
 `mechanically-compared` → `human-accepted`
 
 No earlier state implies a later one.
+
+## ChatGPT Vanguard production canary
+
+The production profile is deliberately narrower than the local appliance. It exposes exactly:
+
+- `start_vanguard_canary()`
+- `get_vanguard_canary_status(execution_id)`
+- `get_vanguard_canary_result(execution_id)`
+
+`start` launches a one-task Cloud Run L4 GPU Job. The job tracks the immutable canonical Vanguard
+Walk v1 and quarantined WalkSwordCarryV2 candidate 003 through the same `GroundedMotionService`
+used by the CLI, verifies both manifests, runs the existing mechanical comparison, and publishes
+private GCS evidence. `result` issues fresh 24-hour signed URLs. `pipeline_pass` proves real pinned
+MMPose inference, structural track validity, artifact readback, and comparison completion;
+`mechanical_pass` can honestly be false, and neither value means human acceptance.
+
+The fixtures preserve the eight source PNGs at Pose Lab commit
+`90ca534c46a47c660e7bf5ef7bd2efcf35dbeb9e` and the eight candidate PNGs at immutable revision
+`b2c5bde5d91325726af34e5daea17b96d78b46f3`. They are assembled as 82 frames at 100 fps using
+repeats `11/9/10/11/11/9/10/11`, with no interpolation. The paths, Git blob ids, file hashes,
+video hashes, candidate quarantine status, and timing live in
+`src/grounded_motion_mcp/data/vanguard_canary.json`.
+
+Production authentication delegates identity only to Home Center OAuth. Tokens must be bound to
+the production `/mcp` resource, carry `grounded-motion:vanguard-canary`, and identify
+`dclarke1005@gmail.com`. Grounded Motion receives no Drive scope or Google refresh token.
+
+Infrastructure is prepared by `infra/bootstrap_gcp.sh` inside the existing billed
+`home-center-dclar` project, using isolated Grounded Motion service accounts, Artifact Registry,
+bucket, Cloud Run service, GPU job, and a repository/main-constrained provider in the existing
+`github-actions` WIF pool. The bootstrap refuses to continue unless the exact materialized videos
+pass their stored SHA-256 values. Pull requests run `.github/workflows/ci.yml`. Every merge to `main` runs
+`.github/workflows/deploy-production.yml`, builds the exact commit, deploys that image to both the
+CPU control service and one-task L4 job, verifies the OAuth challenge, and completes a real GPU
+canary before the deployment is green.

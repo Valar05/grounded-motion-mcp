@@ -1,0 +1,130 @@
+{
+  "schema": "grounded-motion-vanguard-canary/v1",
+  "name": "vanguard-walk-v1-vs-walk-sword-carry-v2-attempt-003",
+  "frame_timing_ms": [
+    110,
+    90,
+    100,
+    110,
+    110,
+    90,
+    100,
+    110
+  ],
+  "materialization": {
+    "fps": 100,
+    "repeat_counts": [
+      11,
+      9,
+      10,
+      11,
+      11,
+      9,
+      10,
+      11
+    ],
+    "frame_count": 82,
+    "interpolation": false
+  },
+  "source": {
+    "repository": "Valar05/pose-lab-v2",
+    "revision": "90ca534c46a47c660e7bf5ef7bd2efcf35dbeb9e",
+    "label": "Canonical Vanguard Walk v1",
+    "gcs_object": "canary/inputs/vanguard-walk-v1.mp4",
+    "frames": [
+      {
+        "path": "public/assets/vanguard/fleshpunk/walk/frames/walk_0000.png",
+        "git_blob_sha1": "943dbdf2d5975199cb066656ebd4b6a162c9cd92",
+        "sha256": "1b152cb8278c80153af6e178b6f8ed298b49e3825fef3c60078e7b978dd99556"
+      },
+      {
+        "path": "public/assets/vanguard/fleshpunk/walk/frames/walk_0001.png",
+        "git_blob_sha1": "789a8fdb89aadd5a552567acf443c1cfb436f728",
+        "sha256": "c248e00ac14f0a78502917d2d9750f6decc58f204e2c8d303846fe6419890d5a"
+      },
+      {
+        "path": "public/assets/vanguard/fleshpunk/walk/frames/walk_0002.png",
+        "git_blob_sha1": "bf4a937d9e3ba52930962014331c8d5717075a64",
+        "sha256": "d279ed258203bb948d706004e773c980af4d2e1366847345d141871ceab510ab"
+      },
+      {
+        "path": "public/assets/vanguard/fleshpunk/walk/frames/walk_0003.png",
+        "git_blob_sha1": "e0eff376542fa2c860a535e0ffae1c509cb92187",
+        "sha256": "2cfafada10bd6bfb98262bfee08ffbedf39bb47158b593ce5ae3b95cb9c9167f"
+      },
+      {
+        "path": "public/assets/vanguard/fleshpunk/walk/frames/walk_0004.png",
+        "git_blob_sha1": "8b0670ec64ac82ca1e137d3273c2711d49c5da82",
+        "sha256": "956cdabc8cb6a1f400b31160d8d6a4227cc3f7bf909a805a582d241f30224d7b"
+      },
+      {
+        "path": "public/assets/vanguard/fleshpunk/walk/frames/walk_0005.png",
+        "git_blob_sha1": "3aacb0619eb1cfa97dfa7b6d2e424c69d346990e",
+        "sha256": "85a7b8b50526eebf7fbb6da80e811d5fac8b155e3b747ecee8caa28276bf1160"
+      },
+      {
+        "path": "public/assets/vanguard/fleshpunk/walk/frames/walk_0006.png",
+        "git_blob_sha1": "83dfae80d1bb2994eaa0233530045f5a7756fa02",
+        "sha256": "465bb6d969743833a23943b2b65452e816c6304e3b277a2018c9c3087bbec031"
+      },
+      {
+        "path": "public/assets/vanguard/fleshpunk/walk/frames/walk_0007.png",
+        "git_blob_sha1": "2a260d517c453d6417c01fbba34cb5b3129dff00",
+        "sha256": "f0947391284d70b0c8d7f9dcbbbcf109e99585121a6bff64fea6d854f4708843"
+      }
+    ],
+    "video_sha256": "1884498810950170a631d138addfcfbe9996bb90855d6ae7903329bedc500562",
+    "video_size_bytes": 12189
+  },
+  "candidate": {
+    "repository": "Valar05/pose-lab-v2",
+    "revision": "b2c5bde5d91325726af34e5daea17b96d78b46f3",
+    "label": "WalkSwordCarryV2 candidate 003",
+    "review_status": "quarantined-human-verdict-pending",
+    "gcs_object": "canary/inputs/walk-sword-carry-v2-attempt-003.mp4",
+    "frames": [
+      {
+        "path": "public/assets/vanguard/steel/candidates/walk-sword-carry-v2/attempt-003/frames/walkswordcarryv2_0000.png",
+        "git_blob_sha1": "032f4a3e1f51afc03b3c3bef4ba000f8acc902a6",
+        "sha256": "6b579a3bfeeeb941a718660f2dc8d4c0d3d8115958b7b33b8024e70c06b2b8d0"
+      },
+      {
+        "path": "public/assets/vanguard/steel/candidates/walk-sword-carry-v2/attempt-003/frames/walkswordcarryv2_0001.png",
+        "git_blob_sha1": "3f1395455224e5d23d1bd3d5a0e1b61e3ae5f967",
+        "sha256": "6fe313c234ee869e8c110111de79144db6ae3def09b1173bfd334ee757ca26eb"
+      },
+      {
+        "path": "public/assets/vanguard/steel/candidates/walk-sword-carry-v2/attempt-003/frames/walkswordcarryv2_0002.png",
+        "git_blob_sha1": "a27e11fea8ed697cfe1eac72bb00c8fb187552db",
+        "sha256": "ebdc99ff16dd9024989816fd63f6c8d4f5d080183a05a21dc7516c89e1b07a4e"
+      },
+      {
+        "path": "public/assets/vanguard/steel/candidates/walk-sword-carry-v2/attempt-003/frames/walkswordcarryv2_0003.png",
+        "git_blob_sha1": "555d877912a16ef3d436702946c6ddd252cb2aca",
+        "sha256": "22dcc7a6b244ab268a530efba8b3343264330af7b730bda54bafab67ba5c1977"
+      },
+      {
+        "path": "public/assets/vanguard/steel/candidates/walk-sword-carry-v2/attempt-003/frames/walkswordcarryv2_0004.png",
+        "git_blob_sha1": "a280472422e2945b4f2cd5ac9d9bc07c08b83d87",
+        "sha256": "e0e2e4338198ad8371213023aef249338ea62ce1c85d7f5e1a00e1798aa74f49"
+      },
+      {
+        "path": "public/assets/vanguard/steel/candidates/walk-sword-carry-v2/attempt-003/frames/walkswordcarryv2_0005.png",
+        "git_blob_sha1": "2af6e59f811f764ffed8b66de33c792280ebc4e4",
+        "sha256": "5efd8f0c652c2a5ea9c2224b56e14f60ce8b6e45b734d6695bb0fb072fae1fee"
+      },
+      {
+        "path": "public/assets/vanguard/steel/candidates/walk-sword-carry-v2/attempt-003/frames/walkswordcarryv2_0006.png",
+        "git_blob_sha1": "dbc1f0e5be3e513b5d80f78fcd0d42d255b77939",
+        "sha256": "7f0c76d7b9afbadc83e885c30f717c80aab1dc1155bb5d3f07f2b99e9daf89e5"
+      },
+      {
+        "path": "public/assets/vanguard/steel/candidates/walk-sword-carry-v2/attempt-003/frames/walkswordcarryv2_0007.png",
+        "git_blob_sha1": "df867058e853256e5c01cbf61226816c81d79013",
+        "sha256": "c4a12c8569c5a1d42a9e6023e06f63b597c67555752db39def9fe198d88e36b4"
+      }
+    ],
+    "video_sha256": "e7c100ce62ba4d6d4549f084065818c502600c487eb3e40e10aa936c4d09cc32",
+    "video_size_bytes": 14623
+  }
+}

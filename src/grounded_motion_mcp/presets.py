@@ -15,6 +15,7 @@ class ModelPreset:
     config_relative: str
     config_url: str
     checkpoint_url: str
+    checkpoint_sha256: str
     input_size: tuple[int, int]
     landmark_count: int
     license: str
@@ -42,6 +43,9 @@ PRESETS = {
         checkpoint_url=(
             "https://download.openmmlab.com/mmpose/v1/projects/rtmw/"
             "rtmw-x_simcc-cocktail14_pt-ucoco_270e-384x288-f840f204_20231122.pth"
+        ),
+        checkpoint_sha256=(
+            "f840f2044fe46cb3821b7cea86be83e1f6cba406ccd28f5475ac010412dcda95"
         ),
         input_size=(384, 288),
         landmark_count=133,

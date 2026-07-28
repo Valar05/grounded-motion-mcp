@@ -84,9 +84,15 @@ jobs:
             --port 8080 \
             --set-env-vars "GROUNDED_MOTION_PROFILE=production,GROUNDED_MOTION_BUCKET=${BUCKET},GROUNDED_MOTION_JOB=${JOB},GROUNDED_MOTION_REGION=${REGION},GROUNDED_MOTION_SIGNER_SERVICE_ACCOUNT=${CONTROL_SERVICE_ACCOUNT},GROUNDED_MOTION_OAUTH_ISSUER=${OAUTH_ISSUER},GROUNDED_MOTION_RESOURCE=${expected_base}/mcp,GROUNDED_MOTION_REVISION=${GITHUB_SHA},GROUNDED_MOTION_IMAGE_DIGEST=${{ steps.image.outputs.digest }}" \
             --quiet
-          actual_base="$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" --format='value(status.url)')"
-          test "$actual_base" = "$expected_base"
-          echo "base=${actual_base}" >> "$GITHUB_OUTPUT"
+          curl --fail --silent --show-error "$expected_base/health" > health.json
+          EXPECTED_BASE="$expected_base" python3 - <<'PY'
+          import json, os
+          payload=json.load(open('health.json'))
+          assert payload['ok'] is True, payload
+          assert payload['resource']==os.environ['EXPECTED_BASE']+'/mcp', payload
+          assert payload['revision']==os.environ['GITHUB_SHA'], payload
+          PY
+          echo "base=${expected_base}" >> "$GITHUB_OUTPUT"
       - name: Verify OAuth challenge and protected-resource metadata
         run: |
           base="${{ steps.service.outputs.base }}"

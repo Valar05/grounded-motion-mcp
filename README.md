@@ -154,9 +154,11 @@ Production authentication delegates identity only to Home Center OAuth. Tokens m
 the production `/mcp` resource, carry `grounded-motion:vanguard-canary`, and identify
 `dclarke1005@gmail.com`. Grounded Motion receives no Drive scope or Google refresh token.
 
-Infrastructure is prepared by `infra/bootstrap_gcp.sh`; it refuses to continue until the locked
-project is billed to the locked account and the exact materialized videos pass their stored
-SHA-256 values. Pull requests run `.github/workflows/ci.yml`. Every merge to `main` runs
+Infrastructure is prepared by `infra/bootstrap_gcp.sh` inside the existing billed
+`home-center-dclar` project, using isolated Grounded Motion service accounts, Artifact Registry,
+bucket, Cloud Run service, GPU job, and a repository/main-constrained provider in the existing
+`github-actions` WIF pool. The bootstrap refuses to continue unless the exact materialized videos
+pass their stored SHA-256 values. Pull requests run `.github/workflows/ci.yml`. Every merge to `main` runs
 `.github/workflows/deploy-production.yml`, builds the exact commit, deploys that image to both the
 CPU control service and one-task L4 job, verifies the OAuth challenge, and completes a real GPU
 canary before the deployment is green.

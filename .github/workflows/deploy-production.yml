@@ -14,15 +14,15 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  PROJECT: grounded-motion-dclar
+  PROJECT: home-center-dclar
   REGION: us-central1
   REPOSITORY: grounded-motion
   IMAGE: grounded-motion
   SERVICE: grounded-motion-mcp
   JOB: grounded-motion-vanguard-canary
-  BUCKET: grounded-motion-dclar-canary
-  CONTROL_SERVICE_ACCOUNT: grounded-motion-control@grounded-motion-dclar.iam.gserviceaccount.com
-  WORKER_SERVICE_ACCOUNT: grounded-motion-worker@grounded-motion-dclar.iam.gserviceaccount.com
+  BUCKET: home-center-dclar-grounded-motion-canary
+  CONTROL_SERVICE_ACCOUNT: grounded-motion-control@home-center-dclar.iam.gserviceaccount.com
+  WORKER_SERVICE_ACCOUNT: grounded-motion-worker@home-center-dclar.iam.gserviceaccount.com
   CHECKPOINT_SHA256: f840f2044fe46cb3821b7cea86be83e1f6cba406ccd28f5475ac010412dcda95
   OAUTH_ISSUER: https://us-central1-home-center-dclar.cloudfunctions.net/homeCenterMcp
 

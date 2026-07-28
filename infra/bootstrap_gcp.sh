@@ -1,16 +1,16 @@
 #!/bin/sh
 set -eu
 
-PROJECT=grounded-motion-dclar
-BILLING_ACCOUNT=013510-0B4227-C5FE92
+PROJECT=home-center-dclar
+BILLING_ACCOUNT=0177BC-8C61C8-CD30A1
 REGION=us-central1
 REPOSITORY=grounded-motion
-BUCKET=grounded-motion-dclar-canary
+BUCKET=home-center-dclar-grounded-motion-canary
 CONTROL_SA=grounded-motion-control
 WORKER_SA=grounded-motion-worker
 DEPLOY_SA=grounded-motion-deploy
-POOL=github
-PROVIDER=valar05-grounded-motion
+POOL=github-actions
+PROVIDER=grounded-motion
 REPOSITORY_SLUG=Valar05/grounded-motion-mcp
 CANARY_DIR=${1:-}
 

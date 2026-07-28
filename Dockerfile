@@ -36,6 +36,7 @@ RUN printf 'numpy==1.26.4\n' > "$PIP_CONSTRAINT" \
        --index-url https://download.pytorch.org/whl/cu121 \
     && python3 -m pip install openmim==0.3.9 \
     && mim install "mmcv==2.1.0" \
+    && mim install "mmdet==3.2.0" \
     && python3 -m pip install --no-build-isolation "chumpy==0.70" \
     && python3 -m pip install "mmengine==0.10.7" "mmpose==1.3.2"
 

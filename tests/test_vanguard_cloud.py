@@ -115,9 +115,9 @@ def test_production_server_exposes_only_three_canary_tools(monkeypatch):
     server = create_production_server()
     tools = asyncio.run(server.list_tools())
     assert [tool.name for tool in tools] == [
-        "start_vanguard_canary",
-        "get_vanguard_canary_status",
-        "get_vanguard_canary_result",
+        "grounded_motion_v2.start_vanguard_canary",
+        "grounded_motion_v2.get_vanguard_canary_status",
+        "grounded_motion_v2.get_vanguard_canary_result",
     ]
     assert all(tool.meta["securitySchemes"] == [
         {"type": "oauth2", "scopes": [CANARY_SCOPE]}
@@ -137,6 +137,20 @@ def test_production_server_exposes_only_three_canary_tools(monkeypatch):
         {"type": "oauth2", "scopes": [CANARY_SCOPE]}
     ] for tool in wire_payload["result"]["tools"])
 
+    class FakeController:
+        def start(self):
+            return {"execution_id": "chatgpt-contract"}
+
+    monkeypatch.setattr(
+        "grounded_motion_mcp.production_server.VanguardCanaryController",
+        FakeController,
+    )
+    called = asyncio.run(
+        server.call_tool("grounded_motion_v2.start_vanguard_canary", {})
+    )
+    assert called.is_error is False
+    assert called.structured_content == {"execution_id": "chatgpt-contract"}
+
 
 def test_chatgpt_security_middleware_updates_the_actual_wire_response():
     from grounded_motion_mcp.production_server import ChatGPTToolSecurityMiddleware
@@ -146,7 +160,7 @@ def test_chatgpt_security_middleware_updates_the_actual_wire_response():
         "id": 1,
         "result": {
             "tools": [{
-                "name": "start_vanguard_canary",
+                "name": "grounded_motion_v2.start_vanguard_canary",
                 "inputSchema": {"type": "object", "properties": {}},
                 "_meta": {"securitySchemes": [
                     {"type": "oauth2", "scopes": [CANARY_SCOPE]}

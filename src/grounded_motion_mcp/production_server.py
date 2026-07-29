@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from mcp.server import MCPServer
@@ -13,6 +15,15 @@ from mcp.types import ToolAnnotations
 from starlette.responses import JSONResponse
 
 from .vanguard_cloud import ALLOWED_EMAIL, CANARY_SCOPE, VanguardCanaryController
+
+AsgiApp = Callable[
+    [
+        dict[str, Any],
+        Callable[[], Awaitable[dict[str, Any]]],
+        Callable[[dict[str, Any]], Awaitable[None]],
+    ],
+    Awaitable[None],
+]
 
 
 class HomeCenterTokenVerifier:
@@ -57,6 +68,80 @@ class HomeCenterTokenVerifier:
             subject=email,
             claims={"iss": issuer, "email": email, "aud": resource},
         )
+
+
+def add_chatgpt_security_schemes(payload: Any) -> bool:
+    """Mirror OAuth schemes onto ChatGPT's top-level tool descriptor field."""
+    if not isinstance(payload, dict):
+        return False
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        return False
+    tools = result.get("tools")
+    if not isinstance(tools, list):
+        return False
+    changed = False
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        meta = tool.get("_meta")
+        schemes = meta.get("securitySchemes") if isinstance(meta, dict) else None
+        if isinstance(schemes, list) and schemes:
+            tool["securitySchemes"] = schemes
+            changed = True
+    return changed
+
+
+class ChatGPTToolSecurityMiddleware:
+    """Preserve ChatGPT auth metadata that the core MCP wire model omits."""
+
+    def __init__(self, app: AsgiApp):
+        self.app = app
+
+    async def __call__(
+        self,
+        scope: dict[str, Any],
+        receive: Callable[[], Awaitable[dict[str, Any]]],
+        send: Callable[[dict[str, Any]], Awaitable[None]],
+    ) -> None:
+        if scope.get("type") != "http" or scope.get("path") != "/mcp":
+            await self.app(scope, receive, send)
+            return
+
+        response_start: dict[str, Any] | None = None
+        response_body: list[bytes] = []
+
+        async def capture(message: dict[str, Any]) -> None:
+            nonlocal response_start
+            if message["type"] == "http.response.start":
+                response_start = message
+                return
+            if message["type"] != "http.response.body":
+                await send(message)
+                return
+            response_body.append(message.get("body", b""))
+            if message.get("more_body", False):
+                return
+
+            body = b"".join(response_body)
+            try:
+                payload = json.loads(body)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                payload = None
+            if add_chatgpt_security_schemes(payload):
+                body = json.dumps(payload, separators=(",", ":")).encode()
+
+            if response_start is not None:
+                headers = [
+                    (name, value)
+                    for name, value in response_start.get("headers", [])
+                    if name.lower() != b"content-length"
+                ]
+                headers.append((b"content-length", str(len(body)).encode()))
+                await send({**response_start, "headers": headers})
+            await send({"type": "http.response.body", "body": body, "more_body": False})
+
+        await self.app(scope, receive, capture)
 
 
 def create_production_server() -> MCPServer:
@@ -164,13 +249,24 @@ def create_production_server() -> MCPServer:
     return server
 
 
-def main() -> None:
+def create_production_app() -> AsgiApp:
+    host = os.environ.get("GROUNDED_MOTION_HOST", "0.0.0.0")
     server = create_production_server()
-    server.run(
-        transport="streamable-http",
+    app = server.streamable_http_app(
         streamable_http_path="/mcp",
         stateless_http=True,
         json_response=True,
+        host=host,
+    )
+    return ChatGPTToolSecurityMiddleware(app)
+
+
+def main() -> None:
+    import uvicorn
+
+    uvicorn.run(
+        create_production_app(),
         host=os.environ.get("GROUNDED_MOTION_HOST", "0.0.0.0"),
         port=int(os.environ.get("PORT", os.environ.get("GROUNDED_MOTION_PORT", "8080"))),
+        log_level="info",
     )

@@ -1,9 +1,10 @@
 # grounded-motion-mcp
 
 `grounded-motion-mcp` is a standalone, agent-free motion tracking appliance. It runs pinned
-MMPose RTMW whole-body inference, preserves all 133 raw landmarks, normalizes the motion into a
-reviewable `grounded-motion-track/v1` graph, and produces evidence for feet, pelvis/root, hands,
-confidence, occlusion, and source chronology.
+MMPose RTMW whole-body inference, preserves all 133 raw landmarks and their exact detector scores,
+normalizes the motion into a reviewable `grounded-motion-track/v2` graph, and produces evidence for
+feet, pelvis/root, hands, detector score, occlusion, and source chronology. RTMW SimCC scores are
+backend-native maximum responses, not calibrated probabilities; values above 1 are preserved.
 
 The model is a sensor. It does not author motion or certify its own output.
 
@@ -20,7 +21,9 @@ Every content-addressed job contains:
 - `receipt.json` — exact input, backend, versions, device, status, and job identity.
 
 Inference deliberately ends in `tracked/unreviewed`. `validate_track` with the production gate
-enabled fails until required landmarks have been reviewed and the event map is locked.
+enabled fails until every required hip, foot, and body-wrist landmark is source-witnessed, the
+review attestations are present, and the event map is reviewed and locked. A claimed review flag
+without witnessed landmark coverage fails closed.
 
 ## MCP tools
 
@@ -128,6 +131,18 @@ must be cached and hashed before production use.
 
 No earlier state implies a later one.
 
+## Judgment v2
+
+The comparison result is tri-state. `judgment_status=completed` permits a boolean
+`mechanical_pass`; `judgment_status=blocked` always returns `mechanical_pass=null` with explicit
+per-lane blockers. Structural inference is never silently promoted into judgment.
+
+Render registration and pelvis/root translation are diagnostics. Root-relative mechanics subtract
+each lane's per-frame pelvis and normalize by that lane's hip-to-ankle scale before comparing hips,
+feet, and COCO body wrists. Render registration never moves root-relative mechanics. For sprite
+fixtures, all 42 detailed COCO hand landmarks remain in raw and normalized evidence but are
+explicitly quarantined from mechanical judgment; body wrists remain eligible after review.
+
 ## ChatGPT Vanguard production canary
 
 The production profile is deliberately narrower than the local appliance. It exposes exactly:
@@ -139,9 +154,11 @@ The production profile is deliberately narrower than the local appliance. It exp
 `start` launches a one-task Cloud Run L4 GPU Job. The job tracks the immutable canonical Vanguard
 Walk v1 and quarantined WalkSwordCarryV2 candidate 003 through the same `GroundedMotionService`
 used by the CLI, verifies both manifests, runs the existing mechanical comparison, and publishes
-private GCS evidence. `result` issues fresh 24-hour signed URLs. `pipeline_pass` proves real pinned
-MMPose inference, structural track validity, artifact readback, and comparison completion;
-`mechanical_pass` can honestly be false, and neither value means human acceptance.
+private GCS evidence. `result` issues fresh 24-hour signed URLs for every artifact and the complete
+evidence index. `pipeline_pass` proves real pinned MMPose inference, structural track validity,
+artifact readback, and diagnostic completion. Because candidate 003 remains human-review pending,
+the canary honestly returns `judgment_status=blocked`, `mechanical_pass=null`, and
+`human_accepted=false`; it does not manufacture a reviewed event lock.
 
 The fixtures preserve the eight source PNGs at Pose Lab commit
 `90ca534c46a47c660e7bf5ef7bd2efcf35dbeb9e` and the eight candidate PNGs at immutable revision

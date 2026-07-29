@@ -156,9 +156,19 @@ jobs:
           assert payload['cuda']['available'] is True, payload
           assert payload['source_structural_pass'] is True, payload
           assert payload['candidate_structural_pass'] is True, payload
+          assert payload['judgment_status']=='blocked', payload
+          assert payload['mechanical_pass'] is None, payload
+          assert payload['human_accepted'] is False, payload
+          assert payload['score_semantics']=='simcc-max-response', payload
+          assert payload['detector_score_verification']['source']['exact_raw_to_track_match'] is True, payload
+          assert payload['detector_score_verification']['source']['above_one_count'] > 0, payload
+          assert payload['detector_score_verification']['candidate']['exact_raw_to_track_match'] is True, payload
+          assert payload['diagnostic_summary']['quarantine']['count']==42, payload
+          assert any(a['name']=='evidence-index.json' for a in payload['artifacts']), payload
           print(json.dumps({
             'execution_id':payload['execution_id'],
             'pipeline_pass':payload['pipeline_pass'],
+            'judgment_status':payload['judgment_status'],
             'mechanical_pass':payload['mechanical_pass'],
             'revision':payload['revision'],
             'image_digest':payload['image_digest'],

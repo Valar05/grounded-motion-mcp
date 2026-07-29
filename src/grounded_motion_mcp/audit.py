@@ -154,6 +154,10 @@ def validate_track(track: dict[str, Any], production: bool = False) -> dict[str,
 
     if track.get("schema") != SCHEMA:
         errors.append({"code": "schema", "message": f"Expected {SCHEMA}"})
+    if not track.get("score_semantics"):
+        errors.append({"code": "score-semantics", "message": "Missing detector score semantics"})
+    if not isinstance(track.get("score_calibrated"), bool):
+        errors.append({"code": "score-calibration", "message": "Missing calibration flag"})
 
     source = track.get("source", {})
     for key in ("sha256", "width", "height", "fps", "frame_count", "duration_seconds"):
@@ -234,6 +238,18 @@ def validate_track(track: dict[str, Any], production: bool = False) -> dict[str,
 
         for name, value in landmarks.items():
             origin = value.get("origin", "detector") if isinstance(value, dict) else None
+            try:
+                detector_score = float(value["score"])
+                if not math.isfinite(detector_score) or detector_score < 0:
+                    raise ValueError
+            except (KeyError, TypeError, ValueError):
+                errors.append(
+                    {
+                        "code": "invalid-detector-score",
+                        "frame": frame_id,
+                        "landmark": name,
+                    }
+                )
             if origin in FORBIDDEN_ACCEPTED_ORIGINS:
                 errors.append(
                     {
@@ -350,6 +366,39 @@ def validate_track(track: dict[str, Any], production: bool = False) -> dict[str,
                 errors.append({"code": "review-attestation-missing", "field": field})
         if not events or any(not event.get("reviewed") for event in events):
             errors.append({"code": "events-not-reviewed"})
+        quarantined = set(
+            track.get("judgment", {}).get("quarantined_landmarks", [])
+        )
+        required_for_judgment = (
+            REQUIRED_GROUPS["hips"]
+            + REQUIRED_GROUPS["feet"]
+            + REQUIRED_GROUPS["wrists"]
+        )
+        for name in required_for_judgment:
+            if name in quarantined:
+                continue
+            if reviewed_coverage.get(name, 0) < 1.0:
+                errors.append(
+                    {
+                        "code": "required-landmark-not-reviewed",
+                        "landmark": name,
+                        "reviewed_coverage": round(reviewed_coverage.get(name, 0), 4),
+                    }
+                )
+
+    quarantined = sorted(
+        set(track.get("judgment", {}).get("quarantined_landmarks", []))
+    )
+    if quarantined:
+        warnings.append(
+            {
+                "code": "landmark-quarantine",
+                "count": len(quarantined),
+                "reason": track.get("judgment", {}).get(
+                    "quarantine_reason", "not eligible for judgment"
+                ),
+            }
+        )
 
     metrics = calculate_metrics(track)
     metrics["coverage"] = coverage
@@ -357,16 +406,45 @@ def validate_track(track: dict[str, Any], production: bool = False) -> dict[str,
     return _finish_report(track, production, errors, warnings, metrics)
 
 
+def _apply_transform(
+    value: dict[str, Any], transform: dict[str, Any] | None
+) -> dict[str, Any]:
+    if not transform:
+        return value
+    return {
+        **value,
+        "x": float(value["x"]) * float(transform["scale_x"])
+        + float(transform["offset_x"]),
+        "y": float(value["y"]) * float(transform["scale_y"])
+        + float(transform["offset_y"]),
+    }
+
+
+def _metric_summary(values: list[float]) -> dict[str, float | int | None]:
+    if not values:
+        return {"count": 0, "mean": None, "maximum": None}
+    return {
+        "count": len(values),
+        "mean": round(sum(values) / len(values), 6),
+        "maximum": round(max(values), 6),
+    }
+
+
 def compare_tracks(source: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
     source_report = validate_track(source, production=False)
     candidate_report = validate_track(candidate, production=False)
+    source_production = validate_track(source, production=True)
+    candidate_production = validate_track(candidate, production=True)
     errors: list[dict[str, Any]] = []
-    deviations: list[dict[str, Any]] = []
+    diagnostic_deviations: list[dict[str, Any]] = []
+    judgment_blockers: list[dict[str, Any]] = []
 
-    if not source_report["pass"]:
-        errors.append({"code": "invalid-source-track"})
-    if not candidate_report["pass"]:
-        errors.append({"code": "invalid-candidate-track"})
+    for lane, report in (
+        ("source", source_production),
+        ("candidate", candidate_production),
+    ):
+        for error in report["errors"]:
+            judgment_blockers.append({"lane": lane, **error})
 
     source_frames = source.get("frames", [])
     candidate_frames = candidate.get("frames", [])
@@ -387,6 +465,12 @@ def compare_tracks(source: dict[str, Any], candidate: dict[str, Any]) -> dict[st
         for side in ("left", "right")
         for suffix in HAND_SUFFIXES
     ]
+    quarantined = sorted(
+        set(source.get("judgment", {}).get("quarantined_landmarks", []))
+        | set(candidate.get("judgment", {}).get("quarantined_landmarks", []))
+    )
+    quarantine_set = set(quarantined)
+
     source_size = (
         source.get("source", {}).get("width"),
         source.get("source", {}).get("height"),
@@ -395,35 +479,43 @@ def compare_tracks(source: dict[str, Any], candidate: dict[str, Any]) -> dict[st
         candidate.get("source", {}).get("width"),
         candidate.get("source", {}).get("height"),
     )
-    transform = candidate.get("coordinate_transform_to_source")
-    if source_size != candidate_size and not transform:
-        errors.append(
-            {
-                "code": "coordinate-system-mismatch",
-                "source_size": source_size,
-                "candidate_size": candidate_size,
-                "message": "Declare one fixed candidate coordinate_transform_to_source",
-            }
-        )
+    transform = candidate.get("judgment", {}).get("render_registration_to_source")
+    if transform is None:
+        transform = candidate.get("coordinate_transform_to_source")
     valid_transform = None
     if transform:
         required_transform = {"scale_x", "scale_y", "offset_x", "offset_y"}
         if not required_transform <= set(transform):
             errors.append(
                 {
-                    "code": "invalid-coordinate-transform",
+                    "code": "invalid-render-registration",
                     "missing": sorted(required_transform - set(transform)),
                 }
             )
         else:
             valid_transform = transform
+    elif source_size != candidate_size:
+        errors.append(
+            {
+                "code": "coordinate-system-mismatch",
+                "source_size": source_size,
+                "candidate_size": candidate_size,
+                "message": "Declare one fixed candidate render_registration_to_source",
+            }
+        )
+
+    root_samples: list[dict[str, Any]] = []
+    root_magnitudes: list[float] = []
+    group_errors: dict[str, list[float]] = {name: [] for name in groups}
+    compared_counts = {name: 0 for name in groups}
 
     for source_frame, candidate_frame in zip(source_frames, candidate_frames):
-        if source_frame.get("id") != candidate_frame.get("id"):
+        frame_id = source_frame.get("id")
+        if frame_id != candidate_frame.get("id"):
             errors.append(
                 {
                     "code": "frame-map",
-                    "source": source_frame.get("id"),
+                    "source": frame_id,
                     "candidate": candidate_frame.get("id"),
                 }
             )
@@ -434,32 +526,63 @@ def compare_tracks(source: dict[str, Any], candidate: dict[str, Any]) -> dict[st
             )
             > 1e-6
         ):
-            errors.append({"code": "timestamp", "frame": source_frame.get("id")})
+            errors.append({"code": "timestamp", "frame": frame_id})
 
-        scale = body_scale(source_frame)
-        if not scale or scale <= 0:
-            errors.append({"code": "body-scale", "frame": source_frame.get("id")})
+        source_scale = body_scale(source_frame)
+        candidate_scale = body_scale(candidate_frame)
+        source_root = point(source_frame, "pelvis")
+        candidate_root = point(candidate_frame, "pelvis")
+        if (
+            not source_scale
+            or source_scale <= 0
+            or not candidate_scale
+            or candidate_scale <= 0
+            or not usable(source_root)
+            or not usable(candidate_root)
+        ):
+            errors.append({"code": "body-scale-or-root", "frame": frame_id})
             continue
+
+        registered_root = _apply_transform(candidate_root, valid_transform)
+        root_dx = float(registered_root["x"]) - float(source_root["x"])
+        root_dy = float(registered_root["y"]) - float(source_root["y"])
+        root_normalized = math.hypot(root_dx, root_dy) / source_scale
+        root_magnitudes.append(root_normalized)
+        root_samples.append(
+            {
+                "frame": frame_id,
+                "time": float(source_frame.get("time_seconds", 0)),
+                "dx_pixels": round(root_dx, 6),
+                "dy_pixels": round(root_dy, 6),
+                "normalized_magnitude": round(root_normalized, 6),
+            }
+        )
 
         for group, names in groups.items():
             threshold = float(thresholds[group])
             for name in names:
+                if name in quarantine_set:
+                    continue
                 a = point(source_frame, name)
                 b = point(candidate_frame, name)
                 if usable(a) and usable(b):
-                    if valid_transform:
-                        b = {
-                            **b,
-                            "x": float(b["x"]) * float(valid_transform["scale_x"])
-                            + float(valid_transform["offset_x"]),
-                            "y": float(b["y"]) * float(valid_transform["scale_y"])
-                            + float(valid_transform["offset_y"]),
-                        }
-                    normalized = distance(a, b) / scale
+                    a_relative = {
+                        "x": (float(a["x"]) - float(source_root["x"])) / source_scale,
+                        "y": (float(a["y"]) - float(source_root["y"])) / source_scale,
+                    }
+                    b_relative = {
+                        "x": (float(b["x"]) - float(candidate_root["x"]))
+                        / candidate_scale,
+                        "y": (float(b["y"]) - float(candidate_root["y"]))
+                        / candidate_scale,
+                    }
+                    normalized = distance(a_relative, b_relative)
+                    group_errors[group].append(normalized)
+                    compared_counts[group] += 1
                     if normalized > threshold:
-                        deviations.append(
+                        diagnostic_deviations.append(
                             {
-                                "frame": source_frame.get("id"),
+                                "frame": frame_id,
                                 "group": group,
                                 "landmark": name,
                                 "normalized_error": round(normalized, 6),
@@ -467,9 +590,9 @@ def compare_tracks(source: dict[str, Any], candidate: dict[str, Any]) -> dict[st
                             }
                         )
                 elif usable(a) != usable(b):
-                    deviations.append(
+                    diagnostic_deviations.append(
                         {
-                            "frame": source_frame.get("id"),
+                            "frame": frame_id,
                             "group": group,
                             "landmark": name,
                             "normalized_error": None,
@@ -478,17 +601,87 @@ def compare_tracks(source: dict[str, Any], candidate: dict[str, Any]) -> dict[st
                         }
                     )
 
-    if deviations:
-        errors.append({"code": "motion-deviation", "count": len(deviations)})
+    if errors:
+        judgment_blockers.extend({"lane": "comparison", **error} for error in errors)
 
+    judgment_status = "completed" if not judgment_blockers else "blocked"
+    mechanical_pass: bool | None
+    deviations: list[dict[str, Any]]
+    authoritative_errors = list(errors)
+    if judgment_status == "completed":
+        deviations = diagnostic_deviations
+        mechanical_pass = not errors and not deviations
+        if deviations:
+            authoritative_errors.append(
+                {"code": "motion-deviation", "count": len(deviations)}
+            )
+    else:
+        deviations = []
+        mechanical_pass = None
+
+    registration_public = dict(
+        valid_transform
+        or {
+            "scale_x": 1.0,
+            "scale_y": 1.0,
+            "offset_x": 0.0,
+            "offset_y": 0.0,
+        }
+    )
     return {
         "schema": COMPARISON_SCHEMA,
-        "pass": not errors,
-        "errors": errors,
-        "warnings": [],
+        "pass": mechanical_pass,
+        "judgment_status": judgment_status,
+        "mechanical_pass": mechanical_pass,
+        "judgment_blockers": judgment_blockers,
+        "errors": authoritative_errors,
+        "warnings": (
+            [
+                {
+                    "code": "sprite-hand-landmarks-quarantined",
+                    "count": len(quarantined),
+                    "landmarks": quarantined,
+                }
+            ]
+            if quarantined
+            else []
+        ),
         "deviations": deviations,
+        "diagnostic_metrics": {
+            "render_registration": {
+                "transform": registration_public,
+                "provenance": registration_public.get("provenance"),
+                "used_for_root_translation_only": True,
+                "used_for_root_relative_mechanics": False,
+            },
+            "root_translation": {
+                "excluded_from_mechanical_pass": True,
+                "summary": _metric_summary(root_magnitudes),
+                "samples": root_samples,
+            },
+            "root_relative_mechanics": {
+                "authoritative": judgment_status == "completed",
+                "normalization": "per-lane-pelvis-and-hip-to-ankle-scale",
+                "thresholds": thresholds,
+                "compared_counts": compared_counts,
+                "group_error_summary": {
+                    name: _metric_summary(values)
+                    for name, values in group_errors.items()
+                },
+                "diagnostic_deviation_count": len(diagnostic_deviations),
+                "diagnostic_deviations": diagnostic_deviations,
+            },
+            "quarantine": {
+                "landmarks": quarantined,
+                "count": len(quarantined),
+                "raw_predictions_preserved": True,
+                "excluded_from_mechanical_pass": True,
+            },
+        },
         "source_validation": source_report,
         "candidate_validation": candidate_report,
+        "source_production_validation": source_production,
+        "candidate_production_validation": candidate_production,
     }
 
 

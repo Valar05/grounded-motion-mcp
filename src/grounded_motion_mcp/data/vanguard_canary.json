@@ -126,5 +126,91 @@
     ],
     "video_sha256": "e7c100ce62ba4d6d4549f084065818c502600c487eb3e40e10aa936c4d09cc32",
     "video_size_bytes": 14623
+  },
+  "judgment": {
+    "modality": "sprite",
+    "review_policy": "fail-closed",
+    "detailed_hand_policy": "quarantine-all-coco-wholebody-hand-landmarks",
+    "quarantine_reason": "sprite hand detail is below reliable semantic resolution and has no source-witnessed review",
+    "diagnostic_event_alignment": {
+      "status": "authored-phase-map-diagnostic-only",
+      "authoritative_for_judgment": false,
+      "source": "pinned Pose Lab pose order and materialization repeat counts",
+      "phases": [
+        {
+          "name": "left-contact",
+          "start_frame": "f000000",
+          "end_frame": "f000010",
+          "support_foot": "left"
+        },
+        {
+          "name": "left-compression",
+          "start_frame": "f000011",
+          "end_frame": "f000019",
+          "support_foot": "left"
+        },
+        {
+          "name": "passing-left-support",
+          "start_frame": "f000020",
+          "end_frame": "f000029",
+          "support_foot": "left"
+        },
+        {
+          "name": "right-reach",
+          "start_frame": "f000030",
+          "end_frame": "f000040",
+          "support_foot": "left"
+        },
+        {
+          "name": "right-contact",
+          "start_frame": "f000041",
+          "end_frame": "f000051",
+          "support_foot": "right"
+        },
+        {
+          "name": "right-compression",
+          "start_frame": "f000052",
+          "end_frame": "f000060",
+          "support_foot": "right"
+        },
+        {
+          "name": "passing-right-support",
+          "start_frame": "f000061",
+          "end_frame": "f000070",
+          "support_foot": "right"
+        },
+        {
+          "name": "left-reach",
+          "start_frame": "f000071",
+          "end_frame": "f000081",
+          "support_foot": "right"
+        }
+      ]
+    },
+    "render_registration_to_source": {
+      "scale_x": 1.0144395208696209,
+      "scale_y": 1.0144395208696209,
+      "offset_x": -26.730291398406308,
+      "offset_y": -6.883161023576008,
+      "kind": "fixed-orthographic-camera-registration",
+      "provenance": {
+        "repository": "Valar05/pose-lab-v2",
+        "source": {
+          "revision": "90ca534c46a47c660e7bf5ef7bd2efcf35dbeb9e",
+          "path": "public/assets/vanguard/fleshpunk/walk/source-metadata.json",
+          "git_blob_sha1": "53780edc3a4ad30d90eb103af1383298018d338a",
+          "sha256": "5b89007a7cfc11b5d8b3af65fd1347ed5928a95a3599ebb97e75957a02c933d6",
+          "camera_ortho_scale": 4.016759872
+        },
+        "candidate": {
+          "revision": "b2c5bde5d91325726af34e5daea17b96d78b46f3",
+          "path": "public/assets/vanguard/steel/candidates/walk-sword-carry-v2/attempt-003/source-metadata.json",
+          "git_blob_sha1": "2acac21b4134d55972ec9156f0954f53e484587a",
+          "sha256": "e46b65e8457bc34b5e10ed16e31a87d56094e1aa75889e5ddb6ed3841e85e3a9",
+          "camera_ortho_scale": 4.07475996
+        },
+        "derivation": "candidate pixels mapped through the two pinned fixed orthographic cameras into source render space; no detector landmark fitting"
+      }
+    }
   }
 }

@@ -20,7 +20,7 @@ class Crop(BaseModel):
 class Landmark(BaseModel):
     x: float | None = None
     y: float | None = None
-    score: float = Field(ge=0.0, le=1.0)
+    score: float = Field(ge=0.0, allow_inf_nan=False)
     visibility: float | None = Field(default=None, ge=0.0, le=1.0)
     origin: Literal["detector", "manual-source-witnessed", "occluded-unknown"] = "detector"
 
@@ -63,7 +63,7 @@ class PoseTrack(BaseModel):
     ] = "tracked"
     source: dict[str, Any]
     backend: dict[str, Any]
-    minimum_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    minimum_score: float = Field(default=0.5, ge=0.0, allow_inf_nan=False)
     review: dict[str, Any] = Field(
         default_factory=lambda: {
             "status": "unreviewed",
@@ -81,7 +81,7 @@ class TrackRequest(BaseModel):
     crop: Crop | None = None
     device: str = "auto"
     model_preset: str = "rtmw-x-cocktail14-384x288"
-    minimum_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    minimum_score: float = Field(default=0.5, ge=0.0, allow_inf_nan=False)
     overwrite_failed: bool = False
 
     @field_validator("source_path")

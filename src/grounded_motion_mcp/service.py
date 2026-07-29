@@ -14,6 +14,7 @@ from . import __version__
 from .artifacts import export_job, write_manifest
 from .audit import compare_tracks, inspect_track, validate_track, write_trajectory_svg
 from .backend import PoseBackend
+from .constants import RECEIPT_SCHEMA
 from .hashing import read_json, sha256_file, sha256_json, write_json
 from .mmpose_backend import MMPoseBackend
 from .models import (
@@ -172,7 +173,7 @@ class GroundedMotionService:
 
             status = "completed" if report["pass"] else "completed-with-findings"
             receipt = {
-                "schema": "grounded-motion-receipt/v1",
+                "schema": RECEIPT_SCHEMA,
                 "job_id": job_id,
                 "status": status,
                 "cached": False,
@@ -283,9 +284,15 @@ class GroundedMotionService:
         )
         write_trajectory_svg(candidate, trajectory_path)
         return {
-            "pass": report["pass"],
+            "pass": report["mechanical_pass"],
+            "judgment_status": report["judgment_status"],
+            "mechanical_pass": report["mechanical_pass"],
+            "judgment_blockers": report["judgment_blockers"],
             "errors": report["errors"],
             "deviation_count": len(report["deviations"]),
+            "diagnostic_deviation_count": report["diagnostic_metrics"][
+                "root_relative_mechanics"
+            ]["diagnostic_deviation_count"],
             "report_path": str(report_path),
             "trajectory_path": str(trajectory_path),
         }

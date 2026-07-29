@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from grounded_motion_mcp.vanguard_worker import _publish_tree
+from grounded_motion_mcp.constants import COCO_WHOLEBODY_NAMES
+from grounded_motion_mcp.vanguard_worker import (
+    _publish_tree,
+    _verify_detector_score_preservation,
+)
 
 
 class FakeStore:
@@ -26,6 +30,37 @@ def test_publish_tree_keeps_lane_and_object_identity(tmp_path: Path):
     assert all(item["lane"] == "source" for item in artifacts)
     assert artifacts[0]["object"] == "executions/execution/source/overlay.mp4"
 
+
+
+def test_detector_score_preservation_verifier_requires_exact_unbounded_values(
+    tmp_path: Path,
+):
+    scores = [3.25 + index / 100 for index in range(133)]
+    raw = {
+        "frames": [
+            {
+                "instances": [{"keypoint_scores": scores}],
+            }
+        ]
+    }
+    track = {
+        "frames": [
+            {
+                "id": "f000000",
+                "landmarks": {
+                    name: {"score": score}
+                    for name, score in zip(COCO_WHOLEBODY_NAMES, scores)
+                },
+            }
+        ]
+    }
+    (tmp_path / "raw-predictions.json").write_text(json.dumps(raw))
+    (tmp_path / "pose-track.json").write_text(json.dumps(track))
+    result = _verify_detector_score_preservation(tmp_path)
+    assert result["pass"] is True
+    assert result["exact_raw_to_track_match"] is True
+    assert result["above_one_count"] == 133
+    assert result["maximum"] == scores[-1]
 
 def test_production_infrastructure_reuses_billed_home_center_project():
     root = Path(__file__).resolve().parents[1]

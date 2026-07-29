@@ -40,6 +40,7 @@ def test_production_infrastructure_reuses_billed_home_center_project():
     assert "PROVIDER=grounded-motion" in bootstrap
     assert "BUCKET=home-center-dclar-grounded-motion-canary" in bootstrap
     assert "BUCKET: home-center-dclar-grounded-motion-canary" in workflow
+    assert "GOOGLE_CLOUD_PROJECT=${PROJECT}" in workflow
     assert 'expected_base="https://${SERVICE}-$(gcloud projects describe "$PROJECT"' in workflow
     assert 'curl --fail --silent --show-error "$expected_base/health"' in workflow
     assert 'EXPECTED_BASE="$expected_base" python3' in workflow

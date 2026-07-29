@@ -82,7 +82,7 @@ jobs:
             --allow-unauthenticated \
             --cpu 1 --memory 1Gi --concurrency 20 --min 0 --max 2 --timeout 60 \
             --port 8080 \
-            --set-env-vars "GROUNDED_MOTION_PROFILE=production,GROUNDED_MOTION_BUCKET=${BUCKET},GROUNDED_MOTION_JOB=${JOB},GROUNDED_MOTION_REGION=${REGION},GROUNDED_MOTION_SIGNER_SERVICE_ACCOUNT=${CONTROL_SERVICE_ACCOUNT},GROUNDED_MOTION_OAUTH_ISSUER=${OAUTH_ISSUER},GROUNDED_MOTION_RESOURCE=${expected_base}/mcp,GROUNDED_MOTION_REVISION=${GITHUB_SHA},GROUNDED_MOTION_IMAGE_DIGEST=${{ steps.image.outputs.digest }}" \
+            --set-env-vars "GROUNDED_MOTION_PROFILE=production,GOOGLE_CLOUD_PROJECT=${PROJECT},GROUNDED_MOTION_BUCKET=${BUCKET},GROUNDED_MOTION_JOB=${JOB},GROUNDED_MOTION_REGION=${REGION},GROUNDED_MOTION_SIGNER_SERVICE_ACCOUNT=${CONTROL_SERVICE_ACCOUNT},GROUNDED_MOTION_OAUTH_ISSUER=${OAUTH_ISSUER},GROUNDED_MOTION_RESOURCE=${expected_base}/mcp,GROUNDED_MOTION_REVISION=${GITHUB_SHA},GROUNDED_MOTION_IMAGE_DIGEST=${{ steps.image.outputs.digest }}" \
             --quiet
           curl --fail --silent --show-error "$expected_base/health" > health.json
           EXPECTED_BASE="$expected_base" python3 - <<'PY'

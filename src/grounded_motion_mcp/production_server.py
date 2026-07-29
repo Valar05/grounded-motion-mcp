@@ -12,6 +12,7 @@ from mcp.server import MCPServer
 from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.settings import AuthSettings
 from mcp.types import ToolAnnotations
+from pydantic import BaseModel, ConfigDict
 from starlette.responses import JSONResponse
 
 from .vanguard_cloud import ALLOWED_EMAIL, CANARY_SCOPE, VanguardCanaryController
@@ -24,6 +25,15 @@ AsgiApp = Callable[
     ],
     Awaitable[None],
 ]
+
+
+class OpenAIFile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    download_url: str
+    file_id: str
+    mime_type: str | None = None
+    file_name: str | None = None
 
 
 class HomeCenterTokenVerifier:
@@ -155,9 +165,9 @@ def create_production_server() -> MCPServer:
     security = [{"type": "oauth2", "scopes": [CANARY_SCOPE]}]
     server = MCPServer(
         "grounded-motion-vanguard",
-        title="Grounded Motion Vanguard Canary",
+        title="Grounded Motion",
         description=(
-            "Runs one immutable source-versus-candidate Vanguard motion tracking canary "
+            "Tracks user-supplied motion clips and runs an immutable Vanguard health canary "
             "on the real pinned RTMW MMPose backend. Tracking is evidence, not acceptance."
         ),
         version=os.environ.get("GROUNDED_MOTION_REVISION", "unknown"),
@@ -174,7 +184,7 @@ def create_production_server() -> MCPServer:
         return JSONResponse(
             {
                 "resource": resource,
-                "resource_name": "Grounded Motion Vanguard Canary",
+                "resource_name": "Grounded Motion",
                 "authorization_servers": [issuer],
                 "scopes_supported": [CANARY_SCOPE],
                 "bearer_methods_supported": ["header"],
@@ -193,6 +203,70 @@ def create_production_server() -> MCPServer:
             },
             headers={"Cache-Control": "no-store"},
         )
+
+    @server.tool(
+        title="Track a motion clip",
+        description=(
+            "Start pinned whole-body GPU tracking for a user-provided video. Use this for "
+            "actual source motion; the Vanguard canary is only a fixed health check. Returns "
+            "an execution id for status and result polling."
+        ),
+        annotations=ToolAnnotations(
+            title="Track a motion clip",
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=False,
+            open_world_hint=True,
+        ),
+        meta={
+            "securitySchemes": security,
+            "openai/fileParams": ["source_file"],
+        },
+    )
+    async def start_motion_tracking(
+        source_file: OpenAIFile,
+        crop: list[int] | None = None,
+        minimum_score: float = 0.5,
+    ) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            VanguardCanaryController().start_motion_tracking,
+            source_file.model_dump(exclude_none=True),
+            crop=crop,
+            minimum_score=minimum_score,
+        )
+
+    @server.tool(
+        title="Get motion tracking status",
+        description="Poll one uploaded motion tracking execution until it reaches a terminal state.",
+        annotations=ToolAnnotations(
+            title="Get motion tracking status",
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=True,
+        ),
+        meta={"securitySchemes": security},
+    )
+    async def get_motion_status(execution_id: str) -> dict[str, Any]:
+        return await asyncio.to_thread(VanguardCanaryController().status, execution_id)
+
+    @server.tool(
+        title="Get motion tracking result",
+        description=(
+            "Return the uploaded clip's normalized whole-body track and fresh 24-hour signed "
+            "URLs for raw predictions, overlays, trajectories, manifests, and receipts."
+        ),
+        annotations=ToolAnnotations(
+            title="Get motion tracking result",
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=True,
+        ),
+        meta={"securitySchemes": security},
+    )
+    async def get_motion_result(execution_id: str) -> dict[str, Any]:
+        return await asyncio.to_thread(VanguardCanaryController().result, execution_id)
 
     @server.tool(
         title="Start Vanguard canary",

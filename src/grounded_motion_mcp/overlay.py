@@ -44,7 +44,10 @@ def _xy(landmarks: dict[str, Any], name: str, minimum_score: float) -> tuple[flo
     value = landmarks.get(name)
     if not value or value.get("origin") == "occluded-unknown":
         return None
-    if float(value.get("score", 0)) < minimum_score:
+    score = value.get("detector_score", value.get("score"))
+    if value.get("origin") != "manual-source-witnessed" and (
+        score is None or float(score) < minimum_score
+    ):
         return None
     if value.get("x") is None or value.get("y") is None:
         return None
@@ -104,5 +107,74 @@ def render_overlays(
 
         label = f'{frame["id"]}  {frame["time_seconds"]:.6f}s'
         draw.rectangle((8, 8, 230, 32), fill=(0, 0, 0))
+        draw.text((14, 13), label, fill=(255, 255, 255))
+        image.save(destination / frame_path.name, format="PNG")
+
+
+
+SUBJECT_PALETTE = [
+    (0, 216, 255),
+    (255, 79, 216),
+    (72, 224, 111),
+    (255, 114, 72),
+    (255, 204, 0),
+    (155, 123, 255),
+]
+
+
+def render_track_set_overlays(
+    frame_paths: list[Path],
+    track_set: dict[str, Any],
+    destination: Path,
+) -> None:
+    """Render every conservative subject segment with stable color and labels."""
+    destination.mkdir(parents=True, exist_ok=True)
+    minimum_score = float(track_set.get("minimum_score", 0.5))
+    frames_by_id: dict[str, list[tuple[int, dict[str, Any], str]]] = {}
+    for subject_index, subject in enumerate(track_set.get("subjects", [])):
+        subject_id = str(subject.get("subject_id", f"subject-{subject_index + 1:04d}"))
+        for frame in subject.get("frames", []):
+            frames_by_id.setdefault(str(frame.get("id")), []).append(
+                (subject_index, frame, subject_id)
+            )
+
+    for frame_index, frame_path in enumerate(frame_paths):
+        frame_id = f"f{frame_index:06d}"
+        with Image.open(frame_path) as source:
+            image = source.convert("RGB")
+        draw = ImageDraw.Draw(image)
+        for subject_index, frame, subject_id in sorted(
+            frames_by_id.get(frame_id, []), key=lambda item: item[2]
+        ):
+            color = SUBJECT_PALETTE[subject_index % len(SUBJECT_PALETTE)]
+            landmarks = frame.get("landmarks", {})
+            for left, right in BODY_EDGES:
+                a = _xy(landmarks, left, minimum_score)
+                b = _xy(landmarks, right, minimum_score)
+                if a and b:
+                    draw.line((a, b), fill=color, width=3)
+            for side in ("left", "right"):
+                for chain in HAND_CHAINS:
+                    for start, end in pairwise(chain):
+                        a = _xy(landmarks, f"{side}_hand_{start}", minimum_score)
+                        b = _xy(landmarks, f"{side}_hand_{end}", minimum_score)
+                        if a and b:
+                            draw.line((a, b), fill=color, width=2)
+            bbox = frame.get("bbox") or []
+            if len(bbox) >= 4:
+                draw.rectangle(tuple(float(value) for value in bbox[:4]), outline=color, width=2)
+                x, y = float(bbox[0]), max(0.0, float(bbox[1]) - 18.0)
+            else:
+                hips = [
+                    _xy(landmarks, "left_hip", minimum_score),
+                    _xy(landmarks, "right_hip", minimum_score),
+                ]
+                visible = [item for item in hips if item]
+                x = visible[0][0] if visible else 8.0
+                y = visible[0][1] if visible else 40.0
+            draw.rectangle((x, y, x + 112, y + 17), fill=(0, 0, 0))
+            draw.text((x + 3, y + 2), subject_id, fill=color)
+        label = f"{frame_id}  {track_set.get('source', {}).get('fps', 0):.6f}fps"
+        draw.rectangle((8, 8, 250, 32), fill=(0, 0, 0))
         draw.text((14, 13), label, fill=(255, 255, 255))
         image.save(destination / frame_path.name, format="PNG")

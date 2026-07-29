@@ -114,12 +114,13 @@ The endpoint is `/mcp`. Do not expose it publicly without authentication and an 
 
 ## Model preset
 
-The production default is MMPose 1.3.2 RTMW-X Cocktail14 at 384×288:
+Production uses MMPose 1.3.2 RTMW-X Cocktail14 at 384×288:
 
 - 133 COCO-WholeBody landmarks.
 - Apache-2.0 MMPose code.
 - Explicit body, six foot, face, and 21 landmarks per hand.
-- Whole-image top-down inference over a caller-locked single-subject crop.
+- The fixed Vanguard canary retains whole-image single-subject inference.
+- Arbitrary uploads use the hash-pinned RTMDet-m COCO-person detector and preserve every detected person in conservative identity segments. Ambiguous crossings, gaps, exits, and re-entry start new segments instead of inventing re-identification.
 
 The preset records the upstream config and checkpoint URL in every receipt. Downloaded weights
 must be cached and hashed before production use.
@@ -145,18 +146,20 @@ explicitly quarantined from mechanical judgment; body wrists remain eligible aft
 
 ## ChatGPT production tools
 
-The production profile accepts a real video attached in ChatGPT:
+The production profile accepts arbitrary hash-locked MP4s through either a ChatGPT attachment or a direct signed upload:
 
-- `start_motion_tracking(source_file, crop?, minimum_score?)`
+- `start_motion_tracking(source_file, expected_sha256?, crop?, minimum_score?, request_id?)`
+- `create_motion_upload(file_name, size_bytes, sha256, request_id?)`
+- `finalize_motion_upload(execution_id, crop?, minimum_score?, request_id?)`
 - `get_motion_status(execution_id)`
 - `get_motion_result(execution_id)`
+- `submit_motion_review(execution_id, tracked_evidence_sha256, subjects, excluded_subjects?, request_id?)`
 
-`source_file` is a top-level ChatGPT file parameter. The control service copies the temporary
-host download into the private Grounded Motion bucket before dispatch, verifies the bytes by
-SHA-256 in the GPU worker, runs the same pinned `GroundedMotionService`, and returns fresh 24-hour
-signed URLs for the raw predictions, normalized track, overlays, trajectories, manifest, receipt,
-and evidence index. The result is explicitly `tracked/unreviewed`; inference does not invent a
-human review or event lock.
+Attachments are copied from an approved temporary host into private GCS. Direct upload returns a one-use, 15-minute signed PUT URL bound to `video/mp4` and a new object generation. Both paths lock the exact GCS generation and declared SHA-256, then run a CPU-only full-decode preflight before joining a FIFO queue. One user GPU execution runs at a time; the fixed health canary has a separate lock. Inputs are capped at 200 MiB and 10,000 decoded frames. Request ids make starts replay-safe.
+
+The GPU worker runs the pinned RTMDet-m + RTMW-X stack and publishes immutable raw predictions, a multi-person track set, conservative identity findings, overlays with stable subject colors, trajectories, manifest, receipt, input lock, and reproducibility index. `get_motion_result` returns fresh 24-hour signed GET URLs. Tracking ends at `tracked/unreviewed` and `event_lock_status=unlocked`.
+
+Review is a separate authenticated, human-only promotion. Every detector segment must be explicitly included or excluded with a reason. Included identities require interval, continuity, required-landmark, and event-map attestations; merges cannot overlap; sparse corrections cannot edit detector confidence; and unreliable landmarks may be quarantined with a reason. Successful review publishes reviewed tracks, event maps, reviewed overlays, trajectories, audit report, submission, and a new signed evidence index while retaining all raw detector evidence.
 
 The immutable health canary remains available separately:
 
@@ -189,6 +192,6 @@ Infrastructure is prepared by `infra/bootstrap_gcp.sh` inside the existing bille
 bucket, Cloud Run service, GPU job, and a repository/main-constrained provider in the existing
 `github-actions` WIF pool. The bootstrap refuses to continue unless the exact materialized videos
 pass their stored SHA-256 values. Pull requests run `.github/workflows/ci.yml`. Every merge to `main` runs
-`.github/workflows/deploy-production.yml`, builds the exact commit, deploys that image to both the
-CPU control service and one-task L4 job, verifies the OAuth challenge, and completes a real GPU
+`.github/workflows/deploy-production.yml`, builds the exact commit, deploys that image to the
+CPU control service, CPU preflight/review job, and one-task L4 job, verifies the OAuth challenge, and completes a real GPU
 canary before the deployment is green.

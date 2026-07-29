@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 SCHEMA = "grounded-motion-track/v2"
+TRACK_V3_SCHEMA = "grounded-motion-track/v3"
+TRACK_SET_SCHEMA = "grounded-motion-track-set/v1"
+REVIEW_SCHEMA = "grounded-motion-review/v1"
+EVENT_MAP_SCHEMA = "grounded-motion-event-map/v1"
+INPUT_LOCK_SCHEMA = "grounded-motion-input-lock/v1"
+EVIDENCE_INDEX_V2_SCHEMA = "grounded-motion-evidence-index/v2"
 LEGACY_SCHEMA = "grounded-motion-track/v1"
 AUDIT_SCHEMA = "grounded-motion-audit/v2"
 COMPARISON_SCHEMA = "grounded-motion-comparison/v2"
@@ -70,8 +76,30 @@ LEFT_HAND_NAMES = [f"left_hand_{name}" for name in HAND_SUFFIXES]
 RIGHT_HAND_NAMES = [f"right_hand_{name}" for name in HAND_SUFFIXES]
 COCO_WHOLEBODY_NAMES = BODY_NAMES + FOOT_NAMES + FACE_NAMES + LEFT_HAND_NAMES + RIGHT_HAND_NAMES
 
+# MMPose 1.3.2 COCO-WholeBody labeling uncertainty values. Keeping these
+# beside the landmark order makes association reproducible without importing
+# the inference-only MMPose package in audit/control installations.
+COCO_WHOLEBODY_SIGMAS = [
+    0.026, 0.025, 0.025, 0.035, 0.035, 0.079, 0.079, 0.072, 0.072, 0.062,
+    0.062, 0.107, 0.107, 0.087, 0.087, 0.089, 0.089, 0.068, 0.066, 0.066,
+    0.092, 0.094, 0.094, 0.042, 0.043, 0.044, 0.043, 0.040, 0.035, 0.031,
+    0.025, 0.020, 0.023, 0.029, 0.032, 0.037, 0.038, 0.043, 0.041, 0.045,
+    0.013, 0.012, 0.011, 0.011, 0.012, 0.012, 0.011, 0.011, 0.013, 0.015,
+    0.009, 0.007, 0.007, 0.007, 0.012, 0.009, 0.008, 0.016, 0.010, 0.017,
+    0.011, 0.009, 0.011, 0.009, 0.007, 0.013, 0.008, 0.011, 0.012, 0.010,
+    0.034, 0.008, 0.008, 0.009, 0.008, 0.008, 0.007, 0.010, 0.008, 0.009,
+    0.009, 0.009, 0.007, 0.007, 0.008, 0.011, 0.008, 0.008, 0.008, 0.010,
+    0.008, 0.029, 0.022, 0.035, 0.037, 0.047, 0.026, 0.025, 0.024, 0.035,
+    0.018, 0.024, 0.022, 0.026, 0.017, 0.021, 0.021, 0.032, 0.020, 0.019,
+    0.022, 0.031, 0.029, 0.022, 0.035, 0.037, 0.047, 0.026, 0.025, 0.024,
+    0.035, 0.018, 0.024, 0.022, 0.026, 0.017, 0.021, 0.021, 0.032, 0.020,
+    0.019, 0.022, 0.031,
+]
+
 if len(COCO_WHOLEBODY_NAMES) != 133:
     raise RuntimeError("COCO-WholeBody mapping must contain exactly 133 landmarks")
+if len(COCO_WHOLEBODY_SIGMAS) != 133:
+    raise RuntimeError("COCO-WholeBody sigma mapping must contain exactly 133 values")
 
 REQUIRED_GROUPS = {
     "hips": ["left_hip", "right_hip"],

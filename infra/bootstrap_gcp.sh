@@ -11,6 +11,7 @@ WORKER_SA=grounded-motion-worker
 DEPLOY_SA=grounded-motion-deploy
 POOL=github-actions
 PROVIDER=grounded-motion
+TASK_QUEUE=grounded-motion-dispatch
 REPOSITORY_SLUG=Valar05/grounded-motion-mcp
 CANARY_DIR=${1:-}
 
@@ -26,6 +27,7 @@ fi
 
 gcloud services enable \
   artifactregistry.googleapis.com \
+  cloudtasks.googleapis.com \
   iam.googleapis.com \
   iamcredentials.googleapis.com \
   run.googleapis.com \
@@ -37,6 +39,11 @@ if ! gcloud artifacts repositories describe "$REPOSITORY" --project "$PROJECT" -
   gcloud artifacts repositories create "$REPOSITORY" \
     --project "$PROJECT" --location "$REGION" \
     --repository-format docker --description "Grounded Motion production images"
+fi
+
+if ! gcloud tasks queues describe "$TASK_QUEUE" --project "$PROJECT" --location "$REGION" >/dev/null 2>&1; then
+  gcloud tasks queues create "$TASK_QUEUE" --project "$PROJECT" --location "$REGION" \
+    --max-concurrent-dispatches=1 --max-dispatches-per-second=1
 fi
 
 if ! gcloud storage buckets describe "gs://$BUCKET" >/dev/null 2>&1; then
@@ -60,6 +67,8 @@ WORKER_EMAIL="$WORKER_SA@$PROJECT.iam.gserviceaccount.com"
 DEPLOY_EMAIL="$DEPLOY_SA@$PROJECT.iam.gserviceaccount.com"
 
 for member in "$CONTROL_EMAIL" "$WORKER_EMAIL"; do
+  gcloud projects add-iam-policy-binding "$PROJECT" \
+    --member "serviceAccount:$member" --role roles/cloudtasks.enqueuer >/dev/null
   gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" \
     --member "serviceAccount:$member" --role roles/storage.objectAdmin >/dev/null
 done
@@ -68,8 +77,13 @@ gcloud projects add-iam-policy-binding "$PROJECT" \
 gcloud iam service-accounts add-iam-policy-binding "$CONTROL_EMAIL" \
   --project "$PROJECT" --member "serviceAccount:$CONTROL_EMAIL" \
   --role roles/iam.serviceAccountTokenCreator >/dev/null
+for caller in "$CONTROL_EMAIL" "$WORKER_EMAIL"; do
+  gcloud iam service-accounts add-iam-policy-binding "$CONTROL_EMAIL" \
+    --project "$PROJECT" --member "serviceAccount:$caller" \
+    --role roles/iam.serviceAccountUser >/dev/null
+done
 
-for role in roles/artifactregistry.writer roles/run.admin roles/storage.objectAdmin roles/serviceusage.serviceUsageConsumer; do
+for role in roles/artifactregistry.writer roles/cloudtasks.admin roles/run.admin roles/storage.objectAdmin roles/serviceusage.serviceUsageConsumer; do
   gcloud projects add-iam-policy-binding "$PROJECT" \
     --member "serviceAccount:$DEPLOY_EMAIL" --role "$role" >/dev/null
 done
@@ -91,6 +105,9 @@ if ! gcloud iam workload-identity-pools providers describe "$PROVIDER" --project
     --attribute-condition "assertion.repository=='$REPOSITORY_SLUG' && assertion.ref=='refs/heads/main'"
 fi
 PROJECT_NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"
+gcloud iam service-accounts add-iam-policy-binding "$CONTROL_EMAIL" --project "$PROJECT" \
+  --member "serviceAccount:service-${PROJECT_NUMBER}@gcp-sa-cloudtasks.iam.gserviceaccount.com" \
+  --role roles/iam.serviceAccountTokenCreator >/dev/null
 gcloud iam service-accounts add-iam-policy-binding "$DEPLOY_EMAIL" --project "$PROJECT" \
   --member "principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$POOL/attribute.repository/$REPOSITORY_SLUG" \
   --role roles/iam.workloadIdentityUser >/dev/null

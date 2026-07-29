@@ -12,7 +12,13 @@ from typing import Any
 
 from . import __version__
 from .artifacts import export_job, write_manifest
-from .audit import compare_tracks, inspect_track, validate_track, write_trajectory_svg
+from .audit import (
+    compare_tracks,
+    inspect_track,
+    validate_track,
+    write_track_set_trajectory_svg,
+    write_trajectory_svg,
+)
 from .backend import PoseBackend
 from .constants import RECEIPT_SCHEMA
 from .hashing import read_json, sha256_file, sha256_json, write_json
@@ -25,8 +31,8 @@ from .models import (
     ValidateRequest,
     expand_path,
 )
-from .normalize import normalize_track
-from .overlay import render_overlays
+from .normalize import normalize_track, normalize_track_set
+from .overlay import render_overlays, render_track_set_overlays
 from .paths import default_workspace, ensure_within, resolve_output, resolve_source
 from .presets import ModelPreset, get_preset
 from .video import decode_frames, encode_video, inspect_video, validate_crop
@@ -140,24 +146,79 @@ class GroundedMotionService:
                 "orientation": "decoded",
                 "resampled": False,
             }
-            track = normalize_track(
-                track_id=job_id,
-                source=source_info,
-                backend=dict(backend.receipt),
-                raw_frames=raw_frames,
-                raw_path="raw-predictions.json",
-                raw_sha256=raw_sha,
-                minimum_score=request.minimum_score,
-            )
-            track_path = temp_dir / "pose-track.json"
-            write_json(track_path, track)
+            multi_person = preset.detector_config_relative is not None
+            if multi_person:
+                track_set = normalize_track_set(
+                    track_set_id=job_id,
+                    source=source_info,
+                    backend=dict(backend.receipt),
+                    raw_frames=raw_frames,
+                    raw_path="raw-predictions.json",
+                    raw_sha256=raw_sha,
+                    minimum_score=request.minimum_score,
+                )
+                track_path = temp_dir / "track-set.json"
+                write_json(track_path, track_set)
+                subject_reports = [
+                    {
+                        "subject_id": subject["subject_id"],
+                        "report": validate_track(subject, production=False),
+                    }
+                    for subject in track_set["subjects"]
+                ]
+                errors = [
+                    {"subject_id": item["subject_id"], **error}
+                    for item in subject_reports
+                    for error in item["report"]["errors"]
+                ]
+                warnings = [
+                    {"subject_id": item["subject_id"], **warning}
+                    for item in subject_reports
+                    for warning in item["report"]["warnings"]
+                ]
+                if not track_set["subjects"]:
+                    errors.append({"code": "no-subjects-detected"})
+                if len(track_set["frame_index"]) != metadata["frame_count"]:
+                    errors.append(
+                        {
+                            "code": "incomplete-source-interval",
+                            "expected_frames": metadata["frame_count"],
+                            "actual_frames": len(track_set["frame_index"]),
+                        }
+                    )
+                report = {
+                    "schema": "grounded-motion-track-set-audit/v1",
+                    "gate": "structural",
+                    "pass": not errors,
+                    "errors": errors,
+                    "warnings": warnings,
+                    "identity_findings": track_set["identity_findings"],
+                    "subjects": subject_reports,
+                }
+                report_path = temp_dir / "track-set-report.json"
+                write_json(report_path, report)
+                if len(track_set["subjects"]) == 1:
+                    write_json(temp_dir / "pose-track.json", track_set["subjects"][0])
+                write_track_set_trajectory_svg(track_set, temp_dir / "trajectories.svg")
+                render_track_set_overlays(frames, track_set, overlay_frames)
+            else:
+                track = normalize_track(
+                    track_id=job_id,
+                    source=source_info,
+                    backend=dict(backend.receipt),
+                    raw_frames=raw_frames,
+                    raw_path="raw-predictions.json",
+                    raw_sha256=raw_sha,
+                    minimum_score=request.minimum_score,
+                )
+                track_path = temp_dir / "pose-track.json"
+                write_json(track_path, track)
+                report = validate_track(track, production=False)
+                report_path = temp_dir / "pose-track-report.json"
+                write_json(report_path, report)
+                write_trajectory_svg(track, temp_dir / "trajectories.svg")
+                render_overlays(frames, track, overlay_frames)
 
-            report = validate_track(track, production=False)
-            report_path = temp_dir / "pose-track-report.json"
-            write_json(report_path, report)
-            write_trajectory_svg(track, temp_dir / "trajectories.svg")
-
-            render_overlays(frames, track, overlay_frames)
             fps = metadata["fps_rational"]
             encode_video(
                 overlay_frames / "frame-%06d.png",
@@ -192,13 +253,17 @@ class GroundedMotionService:
 
             published_names = [
                 "raw-predictions.json",
-                "pose-track.json",
-                "pose-track-report.json",
                 "trajectories.svg",
                 "overlay.mp4",
                 "overlay-slow.mp4",
                 "receipt.json",
             ]
+            if multi_person:
+                published_names.extend(["track-set.json", "track-set-report.json"])
+                if (temp_dir / "pose-track.json").is_file():
+                    published_names.append("pose-track.json")
+            else:
+                published_names.extend(["pose-track.json", "pose-track-report.json"])
             for private_dir in (frames_dir, overlay_frames, temp_dir / "crops"):
                 if private_dir.exists():
                     shutil.rmtree(private_dir)
@@ -220,9 +285,11 @@ class GroundedMotionService:
             "production_accepted": False,
             "receipt": receipt,
             "artifacts": {
-                "track": str(job_dir / "pose-track.json"),
+                "track": str(job_dir / ("track-set.json" if multi_person else "pose-track.json")),
                 "raw": str(job_dir / "raw-predictions.json"),
-                "report": str(job_dir / "pose-track-report.json"),
+                "report": str(
+                    job_dir / ("track-set-report.json" if multi_person else "pose-track-report.json")
+                ),
                 "overlay": str(job_dir / "overlay.mp4"),
                 "overlay_slow": str(job_dir / "overlay-slow.mp4"),
                 "trajectories": str(job_dir / "trajectories.svg"),

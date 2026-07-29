@@ -32,14 +32,25 @@ class FakeStore:
     def read_json(self, name):
         return dict(self.values[name]), 1
 
+    def read_json_or_none(self, name):
+        if name not in self.values:
+            return None, None
+        return self.read_json(name)
+
+    def delete(self, name, if_generation_match=None):
+        self.values.pop(name, None)
+
+    def list_motion_queue(self):
+        return []
+
     def set_lock_state(self, execution_id, state):
         if self.lock and self.lock["execution_id"] == execution_id:
             self.lock["state"] = state
 
-    def signed_url(self, object_name):
+    def signed_url(self, object_name, **_kwargs):
         return f"https://signed.invalid/{object_name}"
 
-    def ingest_openai_file(self, execution_id, file_payload):
+    def ingest_openai_file(self, execution_id, file_payload, expected_sha256=None):
         return {
             "object": f"executions/{execution_id}/inputs/source.mp4",
             "gs_uri": f"gs://fixture/executions/{execution_id}/inputs/source.mp4",
@@ -54,7 +65,7 @@ class FakeStore:
 
 
 class FakeLauncher:
-    def launch(self, execution_id):
+    def launch(self, execution_id, timeout_seconds=3600):
         return {"operation": f"operations/{execution_id}", "job": "jobs/canary"}
 
 
@@ -137,11 +148,28 @@ def test_controller_starts_real_uploaded_motion_tracking(monkeypatch):
     execution_id = started["execution_id"]
     spec = store.values[f"executions/{execution_id}/job-spec.json"]
     assert started["kind"] == "uploaded-track"
-    assert started["source"]["file_id"] == "file-source"
+    assert started["phase"] == "preflighting"
     assert spec["kind"] == "uploaded-track"
     assert spec["source"]["sha256"] == "source-sha"
     assert spec["crop"] == [0, 0, 640, 480]
 
+
+
+def test_attachment_request_id_is_idempotent(monkeypatch):
+    monkeypatch.setenv("GROUNDED_MOTION_REVISION", "abc123")
+    store = FakeStore()
+    controller = VanguardCanaryController(store=store, launcher=FakeLauncher())
+    source = {
+        "download_url": "https://files.oaiusercontent.com/source",
+        "file_id": "file-source",
+        "file_name": "strike.mp4",
+        "mime_type": "video/mp4",
+    }
+    first = controller.start_motion_tracking(source, request_id="chat-turn-001")
+    replay = controller.start_motion_tracking(source, request_id="chat-turn-001")
+    assert replay["execution_id"] == first["execution_id"]
+    assert replay["idempotent_replay"] is True
+    assert replay["phase"] == "preflighting"
 
 def test_controller_result_is_not_green_while_running():
     store = FakeStore()
@@ -167,8 +195,11 @@ def test_production_server_exposes_uploaded_tracking_and_canary_tools(monkeypatc
     tools = asyncio.run(server.list_tools())
     assert [tool.name for tool in tools] == [
         "start_motion_tracking",
+        "create_motion_upload",
+        "finalize_motion_upload",
         "get_motion_status",
         "get_motion_result",
+        "submit_motion_review",
         "start_vanguard_canary",
         "get_vanguard_canary_status",
         "get_vanguard_canary_result",

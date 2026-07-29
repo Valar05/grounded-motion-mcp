@@ -17,6 +17,7 @@ dependencies = [
   "pillow>=11,<13",
   "pydantic>=2.10,<3",
   "requests>=2.32,<3",
+  "scipy>=1.11,<2",
 ]
 
 [project.optional-dependencies]
@@ -37,6 +38,7 @@ dev = [
 grounded-motion = "grounded_motion_mcp.cli:main"
 grounded-motion-mcp = "grounded_motion_mcp.server:main"
 grounded-motion-canary-worker = "grounded_motion_mcp.vanguard_worker:main"
+grounded-motion-preflight-worker = "grounded_motion_mcp.preflight_worker:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/grounded_motion_mcp"]

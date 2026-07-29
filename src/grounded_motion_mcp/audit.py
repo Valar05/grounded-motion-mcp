@@ -17,6 +17,7 @@ from .constants import (
     REQUIRED_GROUPS,
     SCHEMA,
     STEP_EVENTS,
+    TRACK_V3_SCHEMA,
     TRAJECTORY_COLORS,
 )
 
@@ -27,10 +28,16 @@ def point(frame: dict[str, Any], name: str) -> dict[str, Any] | None:
         right = point(frame, "right_hip")
         if not usable(left) or not usable(right):
             return None
+        scores = [
+            value
+            for value in (left.get("detector_score", left.get("score")), right.get("detector_score", right.get("score")))
+            if value is not None
+        ]
         return {
             "x": (float(left["x"]) + float(right["x"])) / 2,
             "y": (float(left["y"]) + float(right["y"])) / 2,
-            "score": min(float(left.get("score", 1)), float(right.get("score", 1))),
+            "score": min(float(value) for value in scores) if scores else None,
+            "detector_score": min(float(value) for value in scores) if scores else None,
             "origin": "derived",
         }
     return frame.get("landmarks", {}).get(name)
@@ -40,11 +47,15 @@ def usable(value: dict[str, Any] | None, threshold: float = 0.0) -> bool:
     if not value or value.get("origin") == "occluded-unknown":
         return False
     try:
-        return (
-            math.isfinite(float(value["x"]))
-            and math.isfinite(float(value["y"]))
-            and float(value.get("score", 1.0)) >= threshold
+        coordinates_are_finite = math.isfinite(float(value["x"])) and math.isfinite(
+            float(value["y"])
         )
+        if not coordinates_are_finite:
+            return False
+        if value.get("origin") == "manual-source-witnessed":
+            return True
+        score = value.get("detector_score", value.get("score", 1.0))
+        return score is not None and float(score) >= threshold
     except (KeyError, TypeError, ValueError):
         return False
 
@@ -152,8 +163,11 @@ def validate_track(track: dict[str, Any], production: bool = False) -> dict[str,
     errors: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
 
-    if track.get("schema") != SCHEMA:
-        errors.append({"code": "schema", "message": f"Expected {SCHEMA}"})
+    schema = track.get("schema")
+    if schema not in {SCHEMA, TRACK_V3_SCHEMA}:
+        errors.append(
+            {"code": "schema", "message": f"Expected {SCHEMA} or {TRACK_V3_SCHEMA}"}
+        )
     if not track.get("score_semantics"):
         errors.append({"code": "score-semantics", "message": "Missing detector score semantics"})
     if not isinstance(track.get("score_calibrated"), bool):
@@ -188,7 +202,11 @@ def validate_track(track: dict[str, Any], production: bool = False) -> dict[str,
         return _finish_report(track, production, errors, warnings, {})
 
     expected_frames = source.get("frame_count")
-    if isinstance(expected_frames, int) and expected_frames != len(frames):
+    if (
+        schema != TRACK_V3_SCHEMA
+        and isinstance(expected_frames, int)
+        and expected_frames != len(frames)
+    ):
         errors.append(
             {
                 "code": "incomplete-source-interval",
@@ -199,6 +217,7 @@ def validate_track(track: dict[str, Any], production: bool = False) -> dict[str,
 
     threshold = float(track.get("minimum_score", 0.5))
     last_time = -math.inf
+    last_index = -1
     ids: set[str] = set()
     indices: set[int] = set()
     coverage_counts = {name: 0 for name in all_named_landmarks()}
@@ -214,7 +233,18 @@ def validate_track(track: dict[str, Any], production: bool = False) -> dict[str,
             errors.append({"code": "frame-index", "frame": frame_id, "index": index})
         else:
             indices.add(index)
-            if index != position:
+            if schema == TRACK_V3_SCHEMA:
+                if index <= last_index:
+                    errors.append(
+                        {
+                            "code": "frame-order",
+                            "frame": frame_id,
+                            "previous_index": last_index,
+                            "actual_index": index,
+                        }
+                    )
+                last_index = index
+            elif index != position:
                 errors.append(
                     {
                         "code": "frame-order",
@@ -238,18 +268,32 @@ def validate_track(track: dict[str, Any], production: bool = False) -> dict[str,
 
         for name, value in landmarks.items():
             origin = value.get("origin", "detector") if isinstance(value, dict) else None
-            try:
-                detector_score = float(value["score"])
-                if not math.isfinite(detector_score) or detector_score < 0:
-                    raise ValueError
-            except (KeyError, TypeError, ValueError):
+            detector_score_value = (
+                value.get("detector_score", value.get("score"))
+                if isinstance(value, dict)
+                else None
+            )
+            if detector_score_value is None and origin == "detector":
                 errors.append(
                     {
-                        "code": "invalid-detector-score",
+                        "code": "missing-detector-score",
                         "frame": frame_id,
                         "landmark": name,
                     }
                 )
+            elif detector_score_value is not None:
+                try:
+                    detector_score = float(detector_score_value)
+                    if not math.isfinite(detector_score) or detector_score < 0:
+                        raise ValueError
+                except (TypeError, ValueError):
+                    errors.append(
+                        {
+                            "code": "invalid-detector-score",
+                            "frame": frame_id,
+                            "landmark": name,
+                        }
+                    )
             if origin in FORBIDDEN_ACCEPTED_ORIGINS:
                 errors.append(
                     {
@@ -285,9 +329,12 @@ def validate_track(track: dict[str, Any], production: bool = False) -> dict[str,
     coverage = {name: count / frame_count for name, count in coverage_counts.items()}
     reviewed_coverage = {name: count / frame_count for name, count in reviewed_counts.items()}
 
+    quarantined = set(track.get("judgment", {}).get("quarantined_landmarks", []))
     for name in (
         REQUIRED_GROUPS["hips"] + REQUIRED_GROUPS["feet"] + REQUIRED_GROUPS["wrists"]
     ):
+        if name in quarantined:
+            continue
         if coverage.get(name, 0) < 1.0:
             errors.append(
                 {
@@ -366,9 +413,6 @@ def validate_track(track: dict[str, Any], production: bool = False) -> dict[str,
                 errors.append({"code": "review-attestation-missing", "field": field})
         if not events or any(not event.get("reviewed") for event in events):
             errors.append({"code": "events-not-reviewed"})
-        quarantined = set(
-            track.get("judgment", {}).get("quarantined_landmarks", [])
-        )
         required_for_judgment = (
             REQUIRED_GROUPS["hips"]
             + REQUIRED_GROUPS["feet"]
@@ -761,3 +805,39 @@ def inspect_track(track: dict[str, Any]) -> dict[str, Any]:
         "warnings": report["warnings"],
         "production_errors": production["errors"],
     }
+
+
+
+def write_track_set_trajectory_svg(track_set: dict[str, Any], destination: Path) -> Path:
+    """Write a deterministic combined pelvis trajectory for all subject segments."""
+    width = int(track_set.get("source", {}).get("width", 1280))
+    height = int(track_set.get("source", {}).get("height", 720))
+    palette = [
+        "#00d8ff", "#ff4fd8", "#48e06f", "#ff7248", "#ffcc00", "#9b7bff"
+    ]
+    body = [
+        (
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+            f'viewBox="0 0 {width} {height}">'
+        ),
+        '<rect width="100%" height="100%" fill="#111"/>',
+    ]
+    for index, subject in enumerate(track_set.get("subjects", [])):
+        points = []
+        for frame in subject.get("frames", []):
+            pelvis = point(frame, "pelvis")
+            if usable(pelvis):
+                points.append(f'{float(pelvis["x"]):.3f},{float(pelvis["y"]):.3f}')
+        color = palette[index % len(palette)]
+        if points:
+            body.append(
+                f'<polyline points="{" ".join(points)}" fill="none" '
+                f'stroke="{color}" stroke-width="3"/>'
+            )
+        label_y = 24 + index * 20
+        label = html.escape(str(subject.get("subject_id", f"subject-{index + 1}")))
+        body.append(f'<text x="12" y="{label_y}" fill="{color}">{label}</text>')
+    body.append("</svg>")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text("\n".join(body) + "\n", encoding="utf-8")
+    return destination

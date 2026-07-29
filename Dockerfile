@@ -2,6 +2,7 @@ FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 
 ARG GROUNDED_MOTION_REVISION=unknown
 ARG GROUNDED_MOTION_CHECKPOINT_SHA256=f840f2044fe46cb3821b7cea86be83e1f6cba406ccd28f5475ac010412dcda95
+ARG GROUNDED_MOTION_DETECTOR_SHA256=35b0c7406499e0d141dd6a0235db07c10d2bee8f891f8f4e353c16a009de30e8
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -13,7 +14,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     GROUNDED_MOTION_HOST=0.0.0.0 \
     GROUNDED_MOTION_PORT=8080 \
     GROUNDED_MOTION_REVISION=${GROUNDED_MOTION_REVISION} \
-    GROUNDED_MOTION_CHECKPOINT_SHA256=${GROUNDED_MOTION_CHECKPOINT_SHA256}
+    GROUNDED_MOTION_CHECKPOINT_SHA256=${GROUNDED_MOTION_CHECKPOINT_SHA256} \
+    GROUNDED_MOTION_DETECTOR_SHA256=${GROUNDED_MOTION_DETECTOR_SHA256}
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -52,6 +54,13 @@ RUN mkdir -p /data /models \
     && printf '%s  %s\n' \
        "$GROUNDED_MOTION_CHECKPOINT_SHA256" \
        /models/rtmw-x_simcc-cocktail14_pt-ucoco_270e-384x288-f840f204_20231122.pth \
+       | sha256sum --check --strict \
+    && curl --fail --location --retry 3 \
+       --output /models/rtmdet_m_8xb32-100e_coco-obj365-person-235e8209.pth \
+       https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/rtmdet_m_8xb32-100e_coco-obj365-person-235e8209.pth \
+    && printf '%s  %s\n' \
+       "$GROUNDED_MOTION_DETECTOR_SHA256" \
+       /models/rtmdet_m_8xb32-100e_coco-obj365-person-235e8209.pth \
        | sha256sum --check --strict
 
 VOLUME ["/data"]

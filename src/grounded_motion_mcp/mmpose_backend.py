@@ -68,12 +68,48 @@ class MMPoseBackend:
         self._config_sha = sha256_file(config_path)
         self._checkpoint_path = checkpoint_path
         self._checkpoint_sha = checkpoint_sha
+        self._detector_config_path: Path | None = None
+        self._detector_config_sha: str | None = None
+        self._detector_checkpoint_path: Path | None = None
+        self._detector_checkpoint_sha: str | None = None
+
+        detector_kwargs: dict[str, object]
+        if preset.detector_config_relative:
+            detector_config_path = package_root / ".mim" / preset.detector_config_relative
+            if not detector_config_path.is_file():
+                raise MMPoseUnavailable(
+                    "Pinned MMPose detector config is missing from the installed package: "
+                    f"{detector_config_path}"
+                )
+            if not preset.detector_checkpoint_url or not preset.detector_checkpoint_sha256:
+                raise MMPoseUnavailable("Multi-person preset is missing its detector checkpoint")
+            detector_checkpoint_path, detector_checkpoint_sha = acquire_checkpoint(
+                preset.detector_checkpoint_url,
+                cache_root.expanduser().resolve(),
+            )
+            if detector_checkpoint_sha != preset.detector_checkpoint_sha256:
+                raise MMPoseUnavailable(
+                    "Pinned detector checkpoint SHA-256 mismatch: "
+                    f"expected {preset.detector_checkpoint_sha256}, "
+                    f"got {detector_checkpoint_sha}"
+                )
+            self._detector_config_path = detector_config_path
+            self._detector_config_sha = sha256_file(detector_config_path)
+            self._detector_checkpoint_path = detector_checkpoint_path
+            self._detector_checkpoint_sha = detector_checkpoint_sha
+            detector_kwargs = {
+                "det_model": str(detector_config_path),
+                "det_weights": str(detector_checkpoint_path),
+                "det_cat_ids": preset.detector_cat_ids,
+            }
+        else:
+            detector_kwargs = {"det_model": "whole_image"}
 
         self.inferencer = MMPoseInferencer(
             pose2d=str(config_path),
             pose2d_weights=str(checkpoint_path),
-            det_model="whole_image",
             device=self.device,
+            **detector_kwargs,
         )
 
     @property
@@ -91,6 +127,17 @@ class MMPoseBackend:
             "config_sha256": self._config_sha,
             "checkpoint_path": str(self._checkpoint_path),
             "model_sha256": self._checkpoint_sha,
+            "detector": (
+                {
+                    "config_path": str(self._detector_config_path),
+                    "config_sha256": self._detector_config_sha,
+                    "checkpoint_path": str(self._detector_checkpoint_path),
+                    "model_sha256": self._detector_checkpoint_sha,
+                    "cat_ids": list(self.preset.detector_cat_ids),
+                }
+                if self._detector_config_path is not None
+                else {"mode": "whole-image"}
+            ),
             "packages": self._versions,
             "python": sys.version.split()[0],
         }

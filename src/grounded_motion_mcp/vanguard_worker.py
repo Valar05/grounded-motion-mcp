@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import sys
 import tempfile
 import time
 import traceback
@@ -18,6 +19,7 @@ from .hashing import read_json, sha256_file, write_json
 from .models import CompareRequest, TrackRequest
 from .service import GroundedMotionService
 from .vanguard_cloud import (
+    CloudTasksDispatcher,
     GcsCanaryStore,
     execution_job_spec_object,
     execution_result_object,
@@ -40,14 +42,25 @@ def _status(
     payload, _ = store.read_json(execution_status_object(execution_id))
     payload.update(
         state=state,
+        phase=stage,
         stage=stage,
+        terminal=state in {"completed", "failed"},
         pipeline_pass=pipeline_pass,
         updated_unix=time.time(),
     )
+    if state == "completed" and payload.get("kind") == "uploaded-track":
+        payload["tracking_state"] = "tracked"
     if error:
         payload["error"] = error
     store.write_json(execution_status_object(execution_id), payload)
     store.set_lock_state(execution_id, state)
+    if state in {"completed", "failed"} and payload.get("kind") == "uploaded-track":
+        dispatcher = CloudTasksDispatcher.from_env()
+        if dispatcher is not None:
+            try:
+                dispatcher.enqueue("/internal/dispatch", {})
+            except Exception as exc:  # noqa: BLE001 - status polling is the fallback
+                print(f"dispatch wake-up failed: {exc}", file=sys.stderr)
 
 
 def _verify_cuda() -> dict[str, Any]:
@@ -95,27 +108,62 @@ def _track(
 
 def _verify_detector_score_preservation(job_path: Path) -> dict[str, Any]:
     raw = read_json(job_path / "raw-predictions.json")
-    track = read_json(job_path / "pose-track.json")
     raw_frames = raw.get("frames", [])
-    track_frames = track.get("frames", [])
-    if len(raw_frames) != len(track_frames):
-        raise RuntimeError("Raw and normalized frame counts differ")
-    scores: list[float] = []
-    for raw_frame, track_frame in zip(raw_frames, track_frames):
-        instances = raw_frame.get("instances", [])
-        if len(instances) != 1:
-            raise RuntimeError("Vanguard score verification requires one subject")
-        raw_scores = instances[0].get("keypoint_scores", [])
-        if len(raw_scores) != len(COCO_WHOLEBODY_NAMES):
-            raise RuntimeError("Raw score count differs from COCO-WholeBody mapping")
-        for name, raw_score in zip(COCO_WHOLEBODY_NAMES, raw_scores):
-            normalized_score = track_frame["landmarks"][name]["score"]
-            if float(normalized_score) != float(raw_score):
+    track_set_path = job_path / "track-set.json"
+    if track_set_path.is_file():
+        track_set = read_json(track_set_path)
+        normalized_frames = [
+            frame
+            for subject in track_set.get("subjects", [])
+            for frame in subject.get("frames", [])
+        ]
+        scores: list[float] = []
+        for track_frame in normalized_frames:
+            frame_index = int(track_frame["index"])
+            raw_instance_index = int(track_frame["raw_instance_index"])
+            try:
+                raw_scores = raw_frames[frame_index]["instances"][raw_instance_index][
+                    "keypoint_scores"
+                ]
+            except (IndexError, KeyError, TypeError) as exc:
                 raise RuntimeError(
-                    f"Detector score changed during normalization: "
-                    f"{track_frame['id']} {name} {raw_score} -> {normalized_score}"
-                )
-            scores.append(float(raw_score))
+                    f"Normalized observation does not reference raw evidence: "
+                    f"{track_frame.get('observation_id')}"
+                ) from exc
+            if len(raw_scores) != len(COCO_WHOLEBODY_NAMES):
+                raise RuntimeError("Raw score count differs from COCO-WholeBody mapping")
+            for name, raw_score in zip(COCO_WHOLEBODY_NAMES, raw_scores):
+                landmark = track_frame["landmarks"][name]
+                for field in ("score", "detector_score"):
+                    if float(landmark[field]) != float(raw_score):
+                        raise RuntimeError(
+                            f"Detector score changed during normalization: "
+                            f"{track_frame['id']} {name} {raw_score} -> {landmark[field]}"
+                        )
+                scores.append(float(raw_score))
+    else:
+        track = read_json(job_path / "pose-track.json")
+        track_frames = track.get("frames", [])
+        if len(raw_frames) != len(track_frames):
+            raise RuntimeError("Raw and normalized frame counts differ")
+        scores = []
+        for raw_frame, track_frame in zip(raw_frames, track_frames):
+            instances = raw_frame.get("instances", [])
+            if len(instances) != 1:
+                raise RuntimeError("Vanguard score verification requires one subject")
+            raw_scores = instances[0].get("keypoint_scores", [])
+            if len(raw_scores) != len(COCO_WHOLEBODY_NAMES):
+                raise RuntimeError("Raw score count differs from COCO-WholeBody mapping")
+            for name, raw_score in zip(COCO_WHOLEBODY_NAMES, raw_scores):
+                normalized_score = track_frame["landmarks"][name]["score"]
+                if float(normalized_score) != float(raw_score):
+                    raise RuntimeError(
+                        f"Detector score changed during normalization: "
+                        f"{track_frame['id']} {name} {raw_score} -> {normalized_score}"
+                    )
+                scores.append(float(raw_score))
+    if not scores:
+        raise RuntimeError("No detector scores were published")
     return {
         "pass": True,
         "count": len(scores),
@@ -224,7 +272,11 @@ def _run_uploaded_track(
         suffix = Path(str(spec["source"].get("file_name", "source.mp4"))).suffix or ".mp4"
         source_video = inputs / f"source{suffix}"
         _status(store, execution_id, state="running", stage="downloading-source")
-        store.download(spec["source"]["object"], source_video)
+        store.download(
+            spec["source"]["object"],
+            source_video,
+            generation=int(spec["source"]["generation"]),
+        )
         actual_sha = sha256_file(source_video)
         if actual_sha != spec["source"]["sha256"]:
             raise RuntimeError(f"Uploaded source SHA-256 mismatch: {actual_sha}")
@@ -235,6 +287,9 @@ def _run_uploaded_track(
             source_path=str(source_video),
             device="cuda:0",
             minimum_score=float(spec.get("minimum_score", 0.5)),
+            model_preset=str(
+                spec.get("model_preset", "rtmw-x-cocktail14-multiperson-384x288")
+            ),
             crop=(
                 {
                     "x": spec["crop"][0],
@@ -260,12 +315,38 @@ def _run_uploaded_track(
             "GROUNDED_MOTION_CHECKPOINT_SHA256"
         ):
             raise RuntimeError("Uploaded track checkpoint hash differs from the baked checkpoint")
+        detector_hash = receipt.get("backend", {}).get("detector", {}).get("model_sha256")
+        expected_detector_hash = required_env("GROUNDED_MOTION_DETECTOR_SHA256")
+        if detector_hash != expected_detector_hash:
+            raise RuntimeError(
+                "Uploaded track detector hash differs from the baked detector checkpoint"
+            )
         score_verification = _verify_detector_score_preservation(job_path)
 
         _status(store, execution_id, state="running", stage="publishing-evidence")
         artifacts = _publish_tree(store, execution_id, "source", job_path)
+        input_lock_ref = spec.get("input_lock") or {}
+        input_lock_object = input_lock_ref.get("object")
+        if not input_lock_object:
+            raise RuntimeError("Uploaded tracking job is missing its immutable input lock")
+        input_lock_path = workspace / "input-lock.json"
+        store.download(
+            input_lock_object,
+            input_lock_path,
+            generation=int(input_lock_ref["generation"]),
+        )
+        input_lock_info = store.blob_info(input_lock_object)
+        artifacts.append(
+            {
+                "lane": "control",
+                "name": "input-lock.json",
+                "role": "reproducibility-input-lock",
+                **input_lock_info,
+                "sha256": sha256_file(input_lock_path),
+            }
+        )
         evidence_index = {
-            "schema": "grounded-motion-evidence-index/v1",
+            "schema": "grounded-motion-evidence-index/v2",
             "execution_id": execution_id,
             "revision": os.environ.get("GROUNDED_MOTION_REVISION", "unknown"),
             "image_digest": os.environ.get("GROUNDED_MOTION_IMAGE_DIGEST", "unknown"),
@@ -292,6 +373,7 @@ def _run_uploaded_track(
             "pipeline_pass": True,
             "tracking_state": "tracked",
             "review_status": "unreviewed",
+            "event_lock_status": "unlocked",
             "event_locked": False,
             "human_accepted": False,
             "source": {

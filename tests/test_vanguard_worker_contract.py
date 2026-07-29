@@ -76,7 +76,9 @@ def test_production_infrastructure_reuses_billed_home_center_project():
     assert "BUCKET=home-center-dclar-grounded-motion-canary" in bootstrap
     assert "BUCKET: home-center-dclar-grounded-motion-canary" in workflow
     assert "GOOGLE_CLOUD_PROJECT=${PROJECT}" in workflow
-    assert 'gcloud run jobs add-iam-policy-binding "$JOB"' in workflow
+    assert 'for target_job in "$JOB" "$PREFLIGHT_JOB"' in workflow
+    assert 'gcloud run jobs add-iam-policy-binding "$target_job"' in workflow
+    assert 'GROUNDED_MOTION_TASK_QUEUE=${TASK_QUEUE}' in workflow
     assert '--member "serviceAccount:$CONTROL_SERVICE_ACCOUNT"' in workflow
     assert "--role roles/run.jobsExecutorWithOverrides" in workflow
     assert 'expected_base="https://${SERVICE}-$(gcloud projects describe "$PROJECT"' in workflow

@@ -1,4 +1,4 @@
-"""Authenticated three-tool production MCP surface for ChatGPT."""
+"""Authenticated production MCP surface for ChatGPT motion workflows."""
 
 from __future__ import annotations
 
@@ -154,6 +154,41 @@ class ChatGPTToolSecurityMiddleware:
         await self.app(scope, receive, capture)
 
 
+async def verify_internal_request(request: Any) -> dict[str, Any] | None:
+    """Verify the Google OIDC token used only by Cloud Tasks callbacks."""
+    authorization = str(request.headers.get("authorization", ""))
+    if not authorization.lower().startswith("bearer "):
+        return None
+    token = authorization.split(None, 1)[1]
+    audience = os.environ.get("GROUNDED_MOTION_INTERNAL_URL", "").rstrip("/")
+    allowed = {
+        item.strip().lower()
+        for item in os.environ.get(
+            "GROUNDED_MOTION_INTERNAL_SERVICE_ACCOUNTS",
+            os.environ.get("GROUNDED_MOTION_CONTROL_SERVICE_ACCOUNT", ""),
+        ).split(",")
+        if item.strip()
+    }
+    if not audience or not allowed:
+        return None
+    try:
+        from google.auth.transport.requests import Request
+        from google.oauth2 import id_token
+
+        claims = await asyncio.to_thread(
+            id_token.verify_oauth2_token,
+            token,
+            Request(),
+            audience,
+        )
+    except Exception:  # noqa: BLE001 - reject any token verification failure
+        return None
+    email = str(claims.get("email", "")).lower()
+    if email not in allowed or claims.get("email_verified") is not True:
+        return None
+    return claims
+
+
 def create_production_server() -> MCPServer:
     issuer = os.environ.get(
         "GROUNDED_MOTION_OAUTH_ISSUER",
@@ -204,6 +239,32 @@ def create_production_server() -> MCPServer:
             headers={"Cache-Control": "no-store"},
         )
 
+    @server.custom_route("/internal/ingest", methods=["POST"])
+    async def internal_ingest(request: Any) -> JSONResponse:
+        if await verify_internal_request(request) is None:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        try:
+            payload = await request.json()
+            result = await asyncio.to_thread(
+                VanguardCanaryController().ingest_attachment,
+                str(payload["execution_id"]),
+            )
+            return JSONResponse(result)
+        except Exception as exc:  # noqa: BLE001 - task boundary serializes failures
+            # Controller records a terminal ingest failure; acknowledge the task so
+            # Cloud Tasks does not repeat a rejected or hash-mismatched upload.
+            return JSONResponse({"ok": False, "error": str(exc)})
+
+    @server.custom_route("/internal/dispatch", methods=["POST"])
+    async def internal_dispatch(request: Any) -> JSONResponse:
+        if await verify_internal_request(request) is None:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        try:
+            result = await asyncio.to_thread(VanguardCanaryController().dispatch_next)
+            return JSONResponse(result)
+        except Exception as exc:  # noqa: BLE001 - task retry requires an HTTP failure
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
     @server.tool(
         title="Track a motion clip",
         description=(
@@ -215,7 +276,7 @@ def create_production_server() -> MCPServer:
             title="Track a motion clip",
             read_only_hint=False,
             destructive_hint=False,
-            idempotent_hint=False,
+            idempotent_hint=True,
             open_world_hint=True,
         ),
         meta={
@@ -225,14 +286,76 @@ def create_production_server() -> MCPServer:
     )
     async def start_motion_tracking(
         source_file: OpenAIFile,
+        expected_sha256: str | None = None,
         crop: list[int] | None = None,
         minimum_score: float = 0.5,
+        request_id: str | None = None,
     ) -> dict[str, Any]:
         return await asyncio.to_thread(
             VanguardCanaryController().start_motion_tracking,
             source_file.model_dump(exclude_none=True),
+            expected_sha256=expected_sha256,
             crop=crop,
             minimum_score=minimum_score,
+            request_id=request_id,
+        )
+
+    @server.tool(
+        title="Create a hash-locked MP4 upload",
+        description=(
+            "Create a one-use 15-minute signed PUT URL for a declared MP4 byte length and "
+            "SHA-256. Call finalize_motion_upload after uploading the exact bytes."
+        ),
+        annotations=ToolAnnotations(
+            title="Create a hash-locked MP4 upload",
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=True,
+        ),
+        meta={"securitySchemes": security},
+    )
+    async def create_motion_upload(
+        file_name: str,
+        size_bytes: int,
+        sha256: str,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            VanguardCanaryController().create_motion_upload,
+            file_name=file_name,
+            size_bytes=size_bytes,
+            sha256=sha256,
+            request_id=request_id,
+        )
+
+    @server.tool(
+        title="Finalize a hash-locked MP4 upload",
+        description=(
+            "Lock the uploaded GCS generation, run CPU SHA/MP4/full-decode preflight, and "
+            "enqueue one asynchronous multi-person RTMW GPU execution."
+        ),
+        annotations=ToolAnnotations(
+            title="Finalize a hash-locked MP4 upload",
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=True,
+        ),
+        meta={"securitySchemes": security},
+    )
+    async def finalize_motion_upload(
+        execution_id: str,
+        crop: list[int] | None = None,
+        minimum_score: float = 0.5,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            VanguardCanaryController().finalize_motion_upload,
+            execution_id,
+            crop=crop,
+            minimum_score=minimum_score,
+            request_id=request_id,
         )
 
     @server.tool(
@@ -267,6 +390,39 @@ def create_production_server() -> MCPServer:
     )
     async def get_motion_result(execution_id: str) -> dict[str, Any]:
         return await asyncio.to_thread(VanguardCanaryController().result, execution_id)
+
+    @server.tool(
+        title="Submit human motion review",
+        description=(
+            "Submit explicit human identity/interval attestations, exclusions, event maps, "
+            "quarantines, and sparse landmark corrections against an immutable track-set hash. "
+            "Detector confidence cannot be edited."
+        ),
+        annotations=ToolAnnotations(
+            title="Submit human motion review",
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+        meta={"securitySchemes": security},
+    )
+    async def submit_motion_review(
+        execution_id: str,
+        tracked_evidence_sha256: str,
+        subjects: list[dict[str, Any]],
+        excluded_subjects: list[dict[str, Any]] | None = None,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            VanguardCanaryController().submit_motion_review,
+            execution_id,
+            tracked_evidence_sha256=tracked_evidence_sha256,
+            subjects=subjects,
+            excluded_subjects=excluded_subjects,
+            request_id=request_id,
+            reviewer=ALLOWED_EMAIL,
+        )
 
     @server.tool(
         title="Start Vanguard canary",

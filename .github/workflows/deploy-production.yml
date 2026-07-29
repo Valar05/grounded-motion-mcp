@@ -20,10 +20,13 @@ env:
   IMAGE: grounded-motion
   SERVICE: grounded-motion-mcp
   JOB: grounded-motion-vanguard-canary
+  PREFLIGHT_JOB: grounded-motion-preflight
+  TASK_QUEUE: grounded-motion-dispatch
   BUCKET: home-center-dclar-grounded-motion-canary
   CONTROL_SERVICE_ACCOUNT: grounded-motion-control@home-center-dclar.iam.gserviceaccount.com
   WORKER_SERVICE_ACCOUNT: grounded-motion-worker@home-center-dclar.iam.gserviceaccount.com
   CHECKPOINT_SHA256: f840f2044fe46cb3821b7cea86be83e1f6cba406ccd28f5475ac010412dcda95
+  DETECTOR_SHA256: 35b0c7406499e0d141dd6a0235db07c10d2bee8f891f8f4e353c16a009de30e8
   OAUTH_ISSUER: https://us-central1-home-center-dclar.cloudfunctions.net/homeCenterMcp
 
 jobs:
@@ -53,12 +56,19 @@ jobs:
           docker build \
             --build-arg "GROUNDED_MOTION_REVISION=${GITHUB_SHA}" \
             --build-arg "GROUNDED_MOTION_CHECKPOINT_SHA256=${CHECKPOINT_SHA256}" \
+            --build-arg "GROUNDED_MOTION_DETECTOR_SHA256=${DETECTOR_SHA256}" \
             --tag "$image" .
           docker push "$image"
           digest="$(docker inspect --format='{{index .RepoDigests 0}}' "$image" | cut -d@ -f2)"
           test -n "$digest"
           echo "uri=${image}" >> "$GITHUB_OUTPUT"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+      - name: Ensure asynchronous dispatch queue
+        run: |
+          gcloud tasks queues describe "$TASK_QUEUE" --project "$PROJECT" --location "$REGION" >/dev/null 2>&1 || \
+            gcloud tasks queues create "$TASK_QUEUE" --project "$PROJECT" --location "$REGION" \
+              --max-concurrent-dispatches=1 --max-dispatches-per-second=1 --quiet
+
       - name: Deploy one-task L4 GPU job
         run: |
           gcloud run jobs deploy "$JOB" \
@@ -69,15 +79,29 @@ jobs:
             --gpu 1 --gpu-type nvidia-l4 --no-gpu-zonal-redundancy \
             --cpu 4 --memory 16Gi \
             --tasks 1 --parallelism 1 --max-retries 0 --task-timeout 3600s \
-            --set-env-vars "GROUNDED_MOTION_BUCKET=${BUCKET},GROUNDED_MOTION_WORKSPACE=/data,GROUNDED_MOTION_MODEL_CACHE=/models,GROUNDED_MOTION_CHECKPOINT_SHA256=${CHECKPOINT_SHA256},GROUNDED_MOTION_REVISION=${GITHUB_SHA},GROUNDED_MOTION_IMAGE_DIGEST=${{ steps.image.outputs.digest }}" \
+            --set-env-vars "GROUNDED_MOTION_BUCKET=${BUCKET},GROUNDED_MOTION_WORKSPACE=/data,GROUNDED_MOTION_MODEL_CACHE=/models,GROUNDED_MOTION_CHECKPOINT_SHA256=${CHECKPOINT_SHA256},GROUNDED_MOTION_DETECTOR_SHA256=${DETECTOR_SHA256},GROUNDED_MOTION_REVISION=${GITHUB_SHA},GROUNDED_MOTION_IMAGE_DIGEST=${{ steps.image.outputs.digest }},GOOGLE_CLOUD_PROJECT=${PROJECT},GROUNDED_MOTION_REGION=${REGION},GROUNDED_MOTION_TASK_QUEUE=${TASK_QUEUE},GROUNDED_MOTION_INTERNAL_URL=https://${SERVICE}-$(gcloud projects describe "$PROJECT" --format='value(projectNumber)').${REGION}.run.app,GROUNDED_MOTION_CONTROL_SERVICE_ACCOUNT=${CONTROL_SERVICE_ACCOUNT}" \
             --quiet
-      - name: Authorize control service to launch Vanguard with overrides
+      - name: Deploy CPU preflight and human-review job
         run: |
-          gcloud run jobs add-iam-policy-binding "$JOB" \
+          gcloud run jobs deploy "$PREFLIGHT_JOB" \
             --project "$PROJECT" --region "$REGION" \
-            --member "serviceAccount:$CONTROL_SERVICE_ACCOUNT" \
-            --role roles/run.jobsExecutorWithOverrides \
+            --image "${{ steps.image.outputs.uri }}" \
+            --service-account "$WORKER_SERVICE_ACCOUNT" \
+            --command grounded-motion-preflight-worker \
+            --cpu 4 --memory 8Gi \
+            --tasks 1 --parallelism 1 --max-retries 0 --task-timeout 3600s \
+            --set-env-vars "GROUNDED_MOTION_BUCKET=${BUCKET},GROUNDED_MOTION_WORKSPACE=/data,GROUNDED_MOTION_CHECKPOINT_SHA256=${CHECKPOINT_SHA256},GROUNDED_MOTION_DETECTOR_SHA256=${DETECTOR_SHA256},GROUNDED_MOTION_REVISION=${GITHUB_SHA},GROUNDED_MOTION_IMAGE_DIGEST=${{ steps.image.outputs.digest }},GOOGLE_CLOUD_PROJECT=${PROJECT},GROUNDED_MOTION_REGION=${REGION},GROUNDED_MOTION_TASK_QUEUE=${TASK_QUEUE},GROUNDED_MOTION_INTERNAL_URL=https://${SERVICE}-$(gcloud projects describe "$PROJECT" --format='value(projectNumber)').${REGION}.run.app,GROUNDED_MOTION_CONTROL_SERVICE_ACCOUNT=${CONTROL_SERVICE_ACCOUNT}" \
             --quiet
+
+      - name: Authorize control service to launch jobs with overrides
+        run: |
+          for target_job in "$JOB" "$PREFLIGHT_JOB"; do
+            gcloud run jobs add-iam-policy-binding "$target_job" \
+              --project "$PROJECT" --region "$REGION" \
+              --member "serviceAccount:$CONTROL_SERVICE_ACCOUNT" \
+              --role roles/run.jobsExecutorWithOverrides \
+              --quiet
+          done
       - name: Deploy authenticated MCP control service
         id: service
         run: |
@@ -87,9 +111,9 @@ jobs:
             --image "${{ steps.image.outputs.uri }}" \
             --service-account "$CONTROL_SERVICE_ACCOUNT" \
             --allow-unauthenticated \
-            --cpu 1 --memory 1Gi --concurrency 20 --min 0 --max 2 --timeout 60 \
+            --cpu 1 --memory 2Gi --concurrency 4 --min 0 --max 4 --timeout 900 \
             --port 8080 \
-            --set-env-vars "GROUNDED_MOTION_PROFILE=production,GOOGLE_CLOUD_PROJECT=${PROJECT},GROUNDED_MOTION_BUCKET=${BUCKET},GROUNDED_MOTION_JOB=${JOB},GROUNDED_MOTION_REGION=${REGION},GROUNDED_MOTION_SIGNER_SERVICE_ACCOUNT=${CONTROL_SERVICE_ACCOUNT},GROUNDED_MOTION_OAUTH_ISSUER=${OAUTH_ISSUER},GROUNDED_MOTION_RESOURCE=${expected_base}/mcp,GROUNDED_MOTION_REVISION=${GITHUB_SHA},GROUNDED_MOTION_IMAGE_DIGEST=${{ steps.image.outputs.digest }}" \
+            --set-env-vars "GROUNDED_MOTION_PROFILE=production,GOOGLE_CLOUD_PROJECT=${PROJECT},GROUNDED_MOTION_BUCKET=${BUCKET},GROUNDED_MOTION_JOB=${JOB},GROUNDED_MOTION_PREFLIGHT_JOB=${PREFLIGHT_JOB},GROUNDED_MOTION_REGION=${REGION},GROUNDED_MOTION_TASK_QUEUE=${TASK_QUEUE},GROUNDED_MOTION_INTERNAL_URL=${expected_base},GROUNDED_MOTION_CONTROL_SERVICE_ACCOUNT=${CONTROL_SERVICE_ACCOUNT},GROUNDED_MOTION_INTERNAL_SERVICE_ACCOUNTS=${CONTROL_SERVICE_ACCOUNT},GROUNDED_MOTION_DETECTOR_SHA256=${DETECTOR_SHA256},GROUNDED_MOTION_SIGNER_SERVICE_ACCOUNT=${CONTROL_SERVICE_ACCOUNT},GROUNDED_MOTION_OAUTH_ISSUER=${OAUTH_ISSUER},GROUNDED_MOTION_RESOURCE=${expected_base}/mcp,GROUNDED_MOTION_REVISION=${GITHUB_SHA},GROUNDED_MOTION_IMAGE_DIGEST=${{ steps.image.outputs.digest }}" \
             --quiet
           curl --fail --silent --show-error "$expected_base/health" > health.json
           EXPECTED_BASE="$expected_base" python3 - <<'PY'

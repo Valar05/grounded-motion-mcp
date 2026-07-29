@@ -110,7 +110,7 @@ def positioned_instance(x_offset: float, score: float = 0.9) -> RawInstance:
 def multiperson_track_set(*, ambiguous: bool = False) -> dict[str, object]:
     pytest.importorskip("scipy")
     first = (
-        [positioned_instance(240.0), positioned_instance(260.0)]
+        [positioned_instance(249.0), positioned_instance(251.0)]
         if ambiguous
         else [positioned_instance(50.0, 6.5), positioned_instance(450.0, 4.25)]
     )

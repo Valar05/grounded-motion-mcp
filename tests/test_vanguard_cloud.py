@@ -59,6 +59,16 @@ def test_manifest_keeps_exact_revisions_timing_and_no_interpolation():
     assert len(fixture["source"]["frames"]) == 8
     assert len(fixture["candidate"]["frames"]) == 8
     assert fixture["candidate"]["review_status"] == "quarantined-human-verdict-pending"
+    assert fixture["judgment"]["review_policy"] == "fail-closed"
+    assert fixture["judgment"]["diagnostic_event_alignment"][
+        "authoritative_for_judgment"
+    ] is False
+    assert len(fixture["judgment"]["diagnostic_event_alignment"]["phases"]) == 8
+    registration = fixture["judgment"]["render_registration_to_source"]
+    assert registration["kind"] == "fixed-orthographic-camera-registration"
+    assert registration["provenance"]["source"]["git_blob_sha1"] == (
+        "53780edc3a4ad30d90eb103af1383298018d338a"
+    )
 
 
 def test_controller_starts_polls_and_signs_terminal_result(monkeypatch):
@@ -82,14 +92,19 @@ def test_controller_starts_polls_and_signs_terminal_result(monkeypatch):
         "execution_id": execution_id,
         "state": "completed",
         "pipeline_pass": True,
-        "mechanical_pass": False,
+        "judgment_status": "blocked",
+        "mechanical_pass": None,
         "artifacts": [{"object": f"executions/{execution_id}/source/overlay.mp4"}],
     }
     result = controller.result(execution_id)
     assert result["pipeline_pass"] is True
-    assert result["mechanical_pass"] is False
+    assert result["judgment_status"] == "blocked"
+    assert result["mechanical_pass"] is None
     assert result["artifacts"][0]["url"].startswith("https://signed.invalid/")
     assert result["artifacts"][0]["url_expires_hours"] == 24
+    assert result["result_url"].endswith(f"executions/{execution_id}/result.json")
+    assert result["status_url"].endswith(f"executions/{execution_id}/status.json")
+    assert result["control_urls_expire_hours"] == 24
 
 
 def test_controller_result_is_not_green_while_running():

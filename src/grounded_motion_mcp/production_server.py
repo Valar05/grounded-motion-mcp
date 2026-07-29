@@ -231,8 +231,9 @@ def create_production_server() -> MCPServer:
     @server.tool(
         title="Get Vanguard canary result",
         description=(
-            "Return structured pipeline and mechanical findings plus 24-hour signed evidence URLs. "
-            "pipeline_pass proves real inference and verified artifacts; mechanical_pass may honestly be false."
+            "Return v2 pipeline, judgment, registration, root-relative, quarantine findings, "
+            "and complete 24-hour signed evidence URLs. pipeline_pass proves real inference "
+            "and verified artifacts; blocked judgment returns mechanical_pass null."
         ),
         annotations=ToolAnnotations(
             title="Get Vanguard canary result",

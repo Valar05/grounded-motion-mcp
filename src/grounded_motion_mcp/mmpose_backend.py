@@ -85,6 +85,8 @@ class MMPoseBackend:
             "version": self._versions.get("mmpose", "unknown"),
             "license": self.preset.license,
             "device": self.device or "auto",
+            "score_semantics": "simcc-max-response",
+            "score_calibrated": False,
             "config_path": str(self._config_path),
             "config_sha256": self._config_sha,
             "checkpoint_path": str(self._checkpoint_path),

@@ -313,5 +313,12 @@ class VanguardCanaryController:
             item["url_expires_hours"] = 24
             signed.append(item)
         result["artifacts"] = signed
+        result["result_url"] = self.store.signed_url(
+            execution_result_object(execution_id)
+        )
+        result["status_url"] = self.store.signed_url(
+            execution_status_object(execution_id)
+        )
+        result["control_urls_expire_hours"] = 24
         result["ready"] = True
         return result

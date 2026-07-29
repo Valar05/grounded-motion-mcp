@@ -11,7 +11,9 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from .artifacts import verify_manifest
+from .artifacts import verify_manifest, write_manifest
+from .audit import validate_track
+from .constants import COCO_WHOLEBODY_NAMES, HAND_SUFFIXES
 from .hashing import read_json, sha256_file, write_json
 from .models import CompareRequest, TrackRequest
 from .service import GroundedMotionService
@@ -90,6 +92,97 @@ def _track(
     }
 
 
+def _verify_detector_score_preservation(job_path: Path) -> dict[str, Any]:
+    raw = read_json(job_path / "raw-predictions.json")
+    track = read_json(job_path / "pose-track.json")
+    raw_frames = raw.get("frames", [])
+    track_frames = track.get("frames", [])
+    if len(raw_frames) != len(track_frames):
+        raise RuntimeError("Raw and normalized frame counts differ")
+    scores: list[float] = []
+    for raw_frame, track_frame in zip(raw_frames, track_frames):
+        instances = raw_frame.get("instances", [])
+        if len(instances) != 1:
+            raise RuntimeError("Vanguard score verification requires one subject")
+        raw_scores = instances[0].get("keypoint_scores", [])
+        if len(raw_scores) != len(COCO_WHOLEBODY_NAMES):
+            raise RuntimeError("Raw score count differs from COCO-WholeBody mapping")
+        for name, raw_score in zip(COCO_WHOLEBODY_NAMES, raw_scores):
+            normalized_score = track_frame["landmarks"][name]["score"]
+            if float(normalized_score) != float(raw_score):
+                raise RuntimeError(
+                    f"Detector score changed during normalization: "
+                    f"{track_frame['id']} {name} {raw_score} -> {normalized_score}"
+                )
+            scores.append(float(raw_score))
+    return {
+        "pass": True,
+        "count": len(scores),
+        "minimum": min(scores),
+        "maximum": max(scores),
+        "above_one_count": sum(score > 1.0 for score in scores),
+        "exact_raw_to_track_match": True,
+    }
+
+
+def _apply_vanguard_judgment_context(
+    job_path: Path,
+    lane: str,
+    fixture: dict[str, Any],
+) -> dict[str, Any]:
+    track_path = job_path / "pose-track.json"
+    track = read_json(track_path)
+    policy = fixture["judgment"]
+    quarantined = [
+        f"{side}_hand_{suffix}"
+        for side in ("left", "right")
+        for suffix in HAND_SUFFIXES
+    ]
+    judgment = {
+        "modality": policy["modality"],
+        "review_policy": policy["review_policy"],
+        "quarantined_landmarks": quarantined,
+        "quarantine_reason": policy["quarantine_reason"],
+        "diagnostic_event_alignment": policy["diagnostic_event_alignment"],
+    }
+    if lane == "candidate":
+        judgment["render_registration_to_source"] = policy[
+            "render_registration_to_source"
+        ]
+    track["judgment"] = judgment
+    write_json(track_path, track)
+
+    report = validate_track(track, production=False)
+    write_json(job_path / "pose-track-report.json", report)
+    receipt_path = job_path / "receipt.json"
+    receipt = read_json(receipt_path)
+    receipt["judgment_context"] = {
+        "modality": judgment["modality"],
+        "review_policy": judgment["review_policy"],
+        "quarantined_landmark_count": len(quarantined),
+        "production_accepted": False,
+    }
+    receipt["structural_pass"] = report["pass"]
+    write_json(receipt_path, receipt)
+    names = [
+        path.name
+        for path in job_path.iterdir()
+        if path.is_file() and path.name != "manifest.json"
+    ]
+    write_manifest(job_path, names)
+    verification = verify_manifest(job_path)
+    if not verification["pass"]:
+        raise RuntimeError(
+            f"Annotated {lane} manifest verification failed: {verification['errors']}"
+        )
+    return {
+        "track": track,
+        "report": report,
+        "receipt": receipt,
+        "manifest_verification": verification,
+    }
+
+
 def _publish_tree(
     store: GcsCanaryStore,
     execution_id: str,
@@ -142,6 +235,24 @@ def run(execution_id: str, store: GcsCanaryStore | None = None) -> dict[str, Any
         source = _track(service, source_video)
         _status(store, execution_id, state="running", stage="tracking-candidate")
         candidate = _track(service, candidate_video)
+        _status(store, execution_id, state="running", stage="applying-judgment-policy")
+        source_context = _apply_vanguard_judgment_context(
+            source["job_path"], "source", fixture
+        )
+        candidate_context = _apply_vanguard_judgment_context(
+            candidate["job_path"], "candidate", fixture
+        )
+        if (
+            candidate_context["track"]["score_semantics"]
+            != source_context["track"]["score_semantics"]
+        ):
+            raise RuntimeError("Canary lanes disagree on detector score semantics")
+        source_score_verification = _verify_detector_score_preservation(
+            source["job_path"]
+        )
+        candidate_score_verification = _verify_detector_score_preservation(
+            candidate["job_path"]
+        )
         _status(store, execution_id, state="running", stage="comparing-motion")
         comparison = service.compare_motion(
             CompareRequest(
@@ -152,12 +263,17 @@ def run(execution_id: str, store: GcsCanaryStore | None = None) -> dict[str, Any
             )
         )
         comparison_dir = workspace / "comparison"
+        comparison_report = read_json(
+            comparison_dir / "candidate-motion-report.json"
+        )
         comparison_receipt = {
-            "schema": "grounded-motion-vanguard-comparison/v1",
+            "schema": "grounded-motion-vanguard-comparison/v2",
             "execution_id": execution_id,
             "source_track_sha256": sha256_file(source["job_path"] / "pose-track.json"),
             "candidate_track_sha256": sha256_file(candidate["job_path"] / "pose-track.json"),
-            "mechanical_pass": bool(comparison["pass"]),
+            "judgment_status": comparison["judgment_status"],
+            "mechanical_pass": comparison["mechanical_pass"],
+            "judgment_blockers": comparison["judgment_blockers"],
             "comparison": comparison,
         }
         write_json(comparison_dir / "comparison-receipt.json", comparison_receipt)
@@ -167,22 +283,66 @@ def run(execution_id: str, store: GcsCanaryStore | None = None) -> dict[str, Any
         artifacts.extend(_publish_tree(store, execution_id, "source", source["job_path"]))
         artifacts.extend(_publish_tree(store, execution_id, "candidate", candidate["job_path"]))
         artifacts.extend(_publish_tree(store, execution_id, "comparison", comparison_dir))
+        evidence_index = {
+            "schema": "grounded-motion-vanguard-evidence-index/v2",
+            "execution_id": execution_id,
+            "revision": os.environ.get("GROUNDED_MOTION_REVISION", "unknown"),
+            "image_digest": os.environ.get("GROUNDED_MOTION_IMAGE_DIGEST", "unknown"),
+            "artifacts": artifacts,
+        }
+        evidence_index_path = comparison_dir / "evidence-index.json"
+        write_json(evidence_index_path, evidence_index)
+        artifacts.append(
+            {
+                "lane": "comparison",
+                "name": "evidence-index.json",
+                **store.upload(
+                    evidence_index_path,
+                    f"executions/{execution_id}/comparison/evidence-index.json",
+                    content_type="application/json",
+                ),
+            }
+        )
         result = {
-            "schema": "grounded-motion-vanguard-result/v1",
+            "schema": "grounded-motion-vanguard-result/v2",
             "execution_id": execution_id,
             "state": "completed",
             "pipeline_pass": True,
-            "mechanical_pass": bool(comparison["pass"]),
+            "judgment_status": comparison["judgment_status"],
+            "mechanical_pass": comparison["mechanical_pass"],
+            "judgment_blockers": comparison["judgment_blockers"],
             "human_accepted": False,
             "fixture": fixture["name"],
             "source_revision": fixture["source"]["revision"],
             "candidate_revision": fixture["candidate"]["revision"],
             "candidate_review_status": fixture["candidate"]["review_status"],
             "minimum_score": 0.5,
+            "score_semantics": source_context["track"]["score_semantics"],
+            "score_calibrated": source_context["track"]["score_calibrated"],
+            "detector_score_verification": {
+                "source": source_score_verification,
+                "candidate": candidate_score_verification,
+            },
+            "diagnostic_summary": {
+                "render_registration": comparison_report["diagnostic_metrics"][
+                    "render_registration"
+                ],
+                "root_translation": comparison_report["diagnostic_metrics"][
+                    "root_translation"
+                ]["summary"],
+                "root_relative_mechanics": {
+                    key: value
+                    for key, value in comparison_report["diagnostic_metrics"][
+                        "root_relative_mechanics"
+                    ].items()
+                    if key != "diagnostic_deviations"
+                },
+                "quarantine": comparison_report["diagnostic_metrics"]["quarantine"],
+            },
             "cuda": cuda,
             "backend": source["receipt"]["backend"],
-            "source_structural_pass": True,
-            "candidate_structural_pass": True,
+            "source_structural_pass": source_context["report"]["pass"],
+            "candidate_structural_pass": candidate_context["report"]["pass"],
             "revision": os.environ.get("GROUNDED_MOTION_REVISION", "unknown"),
             "image_digest": os.environ.get("GROUNDED_MOTION_IMAGE_DIGEST", "unknown"),
             "started_unix": started,

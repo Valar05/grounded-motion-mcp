@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from .backend import RawFrame, RawInstance
@@ -50,10 +51,16 @@ def normalize_track(
             subject.keypoints,
             subject.keypoint_scores,
         ):
+            detector_score = float(score)
+            if not math.isfinite(detector_score) or detector_score < 0:
+                raise ValueError(
+                    f"{raw_frame.frame_id} {name} has invalid detector score "
+                    f"{detector_score!r}"
+                )
             landmarks[name] = {
                 "x": float(pair[0]),
                 "y": float(pair[1]),
-                "score": max(0.0, min(1.0, float(score))),
+                "score": detector_score,
                 "origin": "detector",
             }
         frames.append(
@@ -71,6 +78,10 @@ def normalize_track(
         "state": "tracked",
         "source": source,
         "backend": backend,
+        "score_semantics": backend.get(
+            "score_semantics", "backend-native-keypoint-score"
+        ),
+        "score_calibrated": bool(backend.get("score_calibrated", False)),
         "minimum_score": minimum_score,
         "review": {
             "status": "unreviewed",

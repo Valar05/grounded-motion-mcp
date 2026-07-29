@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-SCHEMA = "grounded-motion-track/v1"
-AUDIT_SCHEMA = "grounded-motion-audit/v1"
-COMPARISON_SCHEMA = "grounded-motion-comparison/v1"
-RECEIPT_SCHEMA = "grounded-motion-receipt/v1"
-MANIFEST_SCHEMA = "grounded-motion-manifest/v1"
+SCHEMA = "grounded-motion-track/v2"
+LEGACY_SCHEMA = "grounded-motion-track/v1"
+AUDIT_SCHEMA = "grounded-motion-audit/v2"
+COMPARISON_SCHEMA = "grounded-motion-comparison/v2"
+RECEIPT_SCHEMA = "grounded-motion-receipt/v2"
+MANIFEST_SCHEMA = "grounded-motion-manifest/v2"
 
 ALLOWED_ORIGINS = {"detector", "manual-source-witnessed", "occluded-unknown"}
 FORBIDDEN_ACCEPTED_ORIGINS = {"interpolated", "smoothed", "guessed", "generated"}

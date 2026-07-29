@@ -181,7 +181,7 @@ async def verify_internal_request(request: Any) -> dict[str, Any] | None:
             Request(),
             audience,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 - reject any token verification failure
         return None
     email = str(claims.get("email", "")).lower()
     if email not in allowed or claims.get("email_verified") is not True:
@@ -250,7 +250,7 @@ def create_production_server() -> MCPServer:
                 str(payload["execution_id"]),
             )
             return JSONResponse(result)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - task boundary serializes failures
             # Controller records a terminal ingest failure; acknowledge the task so
             # Cloud Tasks does not repeat a rejected or hash-mismatched upload.
             return JSONResponse({"ok": False, "error": str(exc)})
@@ -262,7 +262,7 @@ def create_production_server() -> MCPServer:
         try:
             result = await asyncio.to_thread(VanguardCanaryController().dispatch_next)
             return JSONResponse(result)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - task retry requires an HTTP failure
             return JSONResponse({"error": str(exc)}, status_code=500)
 
     @server.tool(

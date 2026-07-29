@@ -109,7 +109,6 @@ def _run_review(
 ) -> dict[str, Any]:
     task = spec["review_task"]
     submission, _ = store.read_json(task["submission_object"])
-    status, _ = store.read_json(execution_status_object(execution_id))
     try:
         with tempfile.TemporaryDirectory(prefix=f"grounded-motion-review-{execution_id}-") as tmp:
             root = Path(tmp)

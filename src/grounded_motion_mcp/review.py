@@ -226,7 +226,7 @@ def apply_human_review(
     now = float(reviewed_unix if reviewed_unix is not None else time.time())
     for subject_review in submission.get("subjects", []):
         _validate_attestations(subject_review)
-        segment_ids = sorted(set(str(value) for value in subject_review.get("segment_ids", [])))
+        segment_ids = sorted({str(value) for value in subject_review.get("segment_ids", [])})
         overlap = consumed.intersection(segment_ids)
         if overlap:
             raise ReviewValidationError(f"subject segments reviewed more than once: {sorted(overlap)}")
@@ -239,7 +239,7 @@ def apply_human_review(
             list(subject_review.get("corrections", [])),
             source_frames,
         )
-        quarantined = sorted(set(str(value) for value in subject_review.get("quarantined_landmarks", [])))
+        quarantined = sorted({str(value) for value in subject_review.get("quarantined_landmarks", [])})
         unknown_quarantine = sorted(set(quarantined) - set(COCO_WHOLEBODY_NAMES))
         if unknown_quarantine:
             raise ReviewValidationError(f"unknown quarantined landmarks: {unknown_quarantine}")

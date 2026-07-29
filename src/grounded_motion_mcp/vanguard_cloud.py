@@ -828,7 +828,7 @@ class VanguardCanaryController:
             "request_id": request_id,
             "created_unix": intent["created_unix"],
         }
-        existing, generation = self.store.read_json_or_none(execution_job_spec_object(execution_id))
+        existing, _ = self.store.read_json_or_none(execution_job_spec_object(execution_id))
         if existing is None:
             self.store.write_json(execution_job_spec_object(execution_id), spec, if_generation_match=0)
         elif existing != spec:
@@ -1123,7 +1123,7 @@ class VanguardCanaryController:
                 try:
                     self.dispatch_next()
                     status, _ = self.store.read_json(execution_status_object(execution_id))
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - polling remains read-safe
                     status["dispatch_warning"] = str(exc)
                 pending = [
                     item

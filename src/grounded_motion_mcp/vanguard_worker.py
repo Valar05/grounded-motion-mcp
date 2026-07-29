@@ -58,9 +58,8 @@ def _status(
         if dispatcher is not None:
             try:
                 dispatcher.enqueue("/internal/dispatch", {})
-            except Exception:
-                # The status poller reconciles the queue if the wake-up task fails.
-                pass
+            except Exception as exc:  # noqa: BLE001 - status polling is the fallback
+                print(f"dispatch wake-up failed: {exc}", file=sys.stderr)
 
 
 def _verify_cuda() -> dict[str, Any]:

@@ -16,8 +16,8 @@ from .constants import (
     PRODUCTION_STATES,
     REQUIRED_GROUPS,
     SCHEMA,
-    TRACK_V3_SCHEMA,
     STEP_EVENTS,
+    TRACK_V3_SCHEMA,
     TRAJECTORY_COLORS,
 )
 
@@ -816,8 +816,10 @@ def write_track_set_trajectory_svg(track_set: dict[str, Any], destination: Path)
         "#00d8ff", "#ff4fd8", "#48e06f", "#ff7248", "#ffcc00", "#9b7bff"
     ]
     body = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-        f'viewBox="0 0 {width} {height}">',
+        (
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+            f'viewBox="0 0 {width} {height}">'
+        ),
         '<rect width="100%" height="100%" fill="#111"/>',
     ]
     for index, subject in enumerate(track_set.get("subjects", [])):

@@ -195,7 +195,6 @@ def create_production_server() -> MCPServer:
         )
 
     @server.tool(
-        name="grounded_motion_v2.start_vanguard_canary",
         title="Start Vanguard canary",
         description=(
             "Start one fresh asynchronous GPU canary comparing canonical Vanguard Walk v1 "
@@ -215,7 +214,6 @@ def create_production_server() -> MCPServer:
         return await asyncio.to_thread(VanguardCanaryController().start)
 
     @server.tool(
-        name="grounded_motion_v2.get_vanguard_canary_status",
         title="Get Vanguard canary status",
         description="Poll the real Cloud Run GPU execution state for a Vanguard canary execution id.",
         annotations=ToolAnnotations(
@@ -231,7 +229,6 @@ def create_production_server() -> MCPServer:
         return await asyncio.to_thread(VanguardCanaryController().status, execution_id)
 
     @server.tool(
-        name="grounded_motion_v2.get_vanguard_canary_result",
         title="Get Vanguard canary result",
         description=(
             "Return structured pipeline and mechanical findings plus 24-hour signed evidence URLs. "

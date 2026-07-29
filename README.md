@@ -132,9 +132,9 @@ No earlier state implies a later one.
 
 The production profile is deliberately narrower than the local appliance. It exposes exactly:
 
-- `start_vanguard_canary()`
-- `get_vanguard_canary_status(execution_id)`
-- `get_vanguard_canary_result(execution_id)`
+- `grounded_motion_v2.start_vanguard_canary()`
+- `grounded_motion_v2.get_vanguard_canary_status(execution_id)`
+- `grounded_motion_v2.get_vanguard_canary_result(execution_id)`
 
 `start` launches a one-task Cloud Run L4 GPU Job. The job tracks the immutable canonical Vanguard
 Walk v1 and quarantined WalkSwordCarryV2 candidate 003 through the same `GroundedMotionService`

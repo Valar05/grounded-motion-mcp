@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass
@@ -11,6 +13,7 @@ from datetime import timedelta
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 TERMINAL_STATES = frozenset({"completed", "failed"})
 RUNNING_STATES = frozenset({"queued", "running"})
@@ -36,6 +39,10 @@ def execution_status_object(execution_id: str) -> str:
 
 def execution_result_object(execution_id: str) -> str:
     return f"executions/{execution_id}/result.json"
+
+
+def execution_job_spec_object(execution_id: str) -> str:
+    return f"executions/{execution_id}/job-spec.json"
 
 
 def validate_execution_id(execution_id: str) -> str:
@@ -173,6 +180,67 @@ class GcsCanaryStore:
             credentials=signing_credentials,
         )
 
+    def ingest_openai_file(
+        self,
+        execution_id: str,
+        file_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        import requests
+
+        download_url = str(file_payload.get("download_url", "")).strip()
+        parsed = urlparse(download_url)
+        host = (parsed.hostname or "").lower()
+        allowed_suffixes = tuple(
+            item.strip().lower()
+            for item in os.environ.get(
+                "GROUNDED_MOTION_ALLOWED_FILE_HOST_SUFFIXES",
+                "oaiusercontent.com,blob.core.windows.net,amazonaws.com",
+            ).split(",")
+            if item.strip()
+        )
+        if parsed.scheme != "https" or not any(
+            host == suffix or host.endswith(f".{suffix}") for suffix in allowed_suffixes
+        ):
+            raise ValueError("source_file download_url is not an approved ChatGPT file host")
+
+        max_bytes = int(os.environ.get("GROUNDED_MOTION_MAX_INPUT_BYTES", str(200 * 1024 * 1024)))
+        file_name = Path(str(file_payload.get("file_name") or "source.mp4")).name
+        suffix = Path(file_name).suffix.lower() or ".mp4"
+        object_name = f"executions/{execution_id}/inputs/source{suffix}"
+        content_type = str(
+            file_payload.get("mime_type")
+            or mimetypes.guess_type(file_name)[0]
+            or "application/octet-stream"
+        )
+        with tempfile.NamedTemporaryFile(prefix="grounded-motion-upload-", suffix=suffix) as handle:
+            total = 0
+            with requests.get(download_url, stream=True, timeout=(10, 120)) as response:
+                response.raise_for_status()
+                declared = int(response.headers.get("content-length", "0") or 0)
+                if declared > max_bytes:
+                    raise ValueError(
+                        f"source_file exceeds the {max_bytes} byte input limit"
+                    )
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise ValueError(
+                            f"source_file exceeds the {max_bytes} byte input limit"
+                        )
+                    handle.write(chunk)
+            handle.flush()
+            if total == 0:
+                raise ValueError("source_file is empty")
+            artifact = self.upload(Path(handle.name), object_name, content_type=content_type)
+        return {
+            **artifact,
+            "file_id": str(file_payload["file_id"]),
+            "file_name": file_name,
+            "mime_type": content_type,
+        }
+
 
 @dataclass(frozen=True)
 class CloudRunJobLauncher:
@@ -276,6 +344,85 @@ class VanguardCanaryController:
             "status_tool": "get_vanguard_canary_status",
             "result_tool": "get_vanguard_canary_result",
             "fixture": status["fixture"],
+            "revision": revision,
+            "image_digest": image_digest,
+            "launch": launch,
+        }
+
+    def start_motion_tracking(
+        self,
+        source_file: dict[str, Any],
+        *,
+        crop: list[int] | None = None,
+        minimum_score: float = 0.5,
+    ) -> dict[str, Any]:
+        if crop is not None and (
+            len(crop) != 4
+            or any(not isinstance(value, int) for value in crop)
+            or crop[2] <= 0
+            or crop[3] <= 0
+        ):
+            raise ValueError("crop must be [x, y, width, height] with positive dimensions")
+        if not 0 <= minimum_score <= 10:
+            raise ValueError("minimum_score must be between 0 and 10")
+
+        execution_id = str(uuid.uuid4())
+        now = time.time()
+        self.store.acquire_execution(execution_id, now)
+        revision = os.environ.get("GROUNDED_MOTION_REVISION", "unknown")
+        image_digest = os.environ.get("GROUNDED_MOTION_IMAGE_DIGEST", "unknown")
+        status = {
+            "schema": "grounded-motion-status/v1",
+            "execution_id": execution_id,
+            "kind": "uploaded-track",
+            "state": "queued",
+            "stage": "ingesting-source-file",
+            "pipeline_pass": False,
+            "revision": revision,
+            "image_digest": image_digest,
+            "created_unix": now,
+            "updated_unix": now,
+        }
+        self.store.write_json(
+            execution_status_object(execution_id), status, if_generation_match=0
+        )
+        try:
+            source = self.store.ingest_openai_file(execution_id, source_file)
+            spec = {
+                "schema": "grounded-motion-job-spec/v1",
+                "execution_id": execution_id,
+                "kind": "uploaded-track",
+                "source": source,
+                "crop": crop,
+                "minimum_score": minimum_score,
+                "created_unix": now,
+            }
+            self.store.write_json(
+                execution_job_spec_object(execution_id), spec, if_generation_match=0
+            )
+            status.update(stage="launching-gpu-job", updated_unix=time.time())
+            self.store.write_json(execution_status_object(execution_id), status)
+            launch = self.launcher.launch(execution_id)
+        except Exception as exc:
+            status.update(
+                state="failed",
+                stage="input-or-gpu-launch-failed",
+                error=str(exc),
+                updated_unix=time.time(),
+            )
+            self.store.write_json(execution_status_object(execution_id), status)
+            self.store.set_lock_state(execution_id, "failed")
+            raise
+        return {
+            "execution_id": execution_id,
+            "kind": "uploaded-track",
+            "state": "queued",
+            "status_tool": "get_motion_status",
+            "result_tool": "get_motion_result",
+            "source": {
+                key: source[key]
+                for key in ("file_id", "file_name", "mime_type", "sha256", "size_bytes")
+            },
             "revision": revision,
             "image_digest": image_digest,
             "launch": launch,

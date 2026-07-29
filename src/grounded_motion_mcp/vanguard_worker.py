@@ -19,6 +19,7 @@ from .models import CompareRequest, TrackRequest
 from .service import GroundedMotionService
 from .vanguard_cloud import (
     GcsCanaryStore,
+    execution_job_spec_object,
     execution_result_object,
     execution_status_object,
     load_canary_manifest,
@@ -208,9 +209,123 @@ def _publish_tree(
     return artifacts
 
 
-def run(execution_id: str, store: GcsCanaryStore | None = None) -> dict[str, Any]:
-    execution_id = validate_execution_id(execution_id)
-    store = store or GcsCanaryStore()
+def _run_uploaded_track(
+    execution_id: str,
+    store: GcsCanaryStore,
+    spec: dict[str, Any],
+) -> dict[str, Any]:
+    started = time.time()
+    _status(store, execution_id, state="running", stage="verifying-gpu")
+    cuda = _verify_cuda()
+    with tempfile.TemporaryDirectory(prefix=f"grounded-motion-{execution_id}-") as temporary:
+        workspace = Path(temporary)
+        inputs = workspace / "inputs"
+        inputs.mkdir()
+        suffix = Path(str(spec["source"].get("file_name", "source.mp4"))).suffix or ".mp4"
+        source_video = inputs / f"source{suffix}"
+        _status(store, execution_id, state="running", stage="downloading-source")
+        store.download(spec["source"]["object"], source_video)
+        actual_sha = sha256_file(source_video)
+        if actual_sha != spec["source"]["sha256"]:
+            raise RuntimeError(f"Uploaded source SHA-256 mismatch: {actual_sha}")
+
+        service = GroundedMotionService(workspace=workspace)
+        _status(store, execution_id, state="running", stage="tracking-source")
+        request = TrackRequest(
+            source_path=str(source_video),
+            device="cuda:0",
+            minimum_score=float(spec.get("minimum_score", 0.5)),
+            crop=(
+                {
+                    "x": spec["crop"][0],
+                    "y": spec["crop"][1],
+                    "width": spec["crop"][2],
+                    "height": spec["crop"][3],
+                }
+                if spec.get("crop") is not None
+                else None
+            ),
+        )
+        tracked_result = service.track_motion(request)
+        job_path = Path(tracked_result["job_path"])
+        verification = verify_manifest(job_path)
+        receipt = read_json(job_path / "receipt.json")
+        if not verification["pass"]:
+            raise RuntimeError(
+                f"Artifact manifest verification failed: {verification['errors']}"
+            )
+        if receipt.get("backend", {}).get("name") != "mmpose":
+            raise RuntimeError("Uploaded track receipt does not prove the real MMPose backend")
+        if receipt.get("backend", {}).get("model_sha256") != required_env(
+            "GROUNDED_MOTION_CHECKPOINT_SHA256"
+        ):
+            raise RuntimeError("Uploaded track checkpoint hash differs from the baked checkpoint")
+        score_verification = _verify_detector_score_preservation(job_path)
+
+        _status(store, execution_id, state="running", stage="publishing-evidence")
+        artifacts = _publish_tree(store, execution_id, "source", job_path)
+        evidence_index = {
+            "schema": "grounded-motion-evidence-index/v1",
+            "execution_id": execution_id,
+            "revision": os.environ.get("GROUNDED_MOTION_REVISION", "unknown"),
+            "image_digest": os.environ.get("GROUNDED_MOTION_IMAGE_DIGEST", "unknown"),
+            "artifacts": artifacts,
+        }
+        evidence_index_path = workspace / "evidence-index.json"
+        write_json(evidence_index_path, evidence_index)
+        artifacts.append(
+            {
+                "lane": "control",
+                "name": "evidence-index.json",
+                **store.upload(
+                    evidence_index_path,
+                    f"executions/{execution_id}/evidence-index.json",
+                    content_type="application/json",
+                ),
+            }
+        )
+        result = {
+            "schema": "grounded-motion-uploaded-track-result/v1",
+            "execution_id": execution_id,
+            "kind": "uploaded-track",
+            "state": "completed",
+            "pipeline_pass": True,
+            "tracking_state": "tracked",
+            "review_status": "unreviewed",
+            "event_locked": False,
+            "human_accepted": False,
+            "source": {
+                key: spec["source"][key]
+                for key in ("file_id", "file_name", "mime_type", "sha256", "size_bytes")
+            },
+            "minimum_score": float(spec.get("minimum_score", 0.5)),
+            "crop": spec.get("crop"),
+            "detector_score_verification": score_verification,
+            "cuda": cuda,
+            "backend": receipt["backend"],
+            "source_structural_pass": receipt.get("structural_pass") is True,
+            "revision": os.environ.get("GROUNDED_MOTION_REVISION", "unknown"),
+            "image_digest": os.environ.get("GROUNDED_MOTION_IMAGE_DIGEST", "unknown"),
+            "started_unix": started,
+            "completed_unix": time.time(),
+            "duration_seconds": time.time() - started,
+            "artifacts": artifacts,
+        }
+        store.write_json(execution_result_object(execution_id), result, if_generation_match=0)
+    _status(
+        store,
+        execution_id,
+        state="completed",
+        stage="evidence-ready",
+        pipeline_pass=True,
+    )
+    return result
+
+
+def _run_canary(
+    execution_id: str,
+    store: GcsCanaryStore,
+) -> dict[str, Any]:
     fixture = load_canary_manifest()
     started = time.time()
     _status(store, execution_id, state="running", stage="verifying-gpu")
@@ -359,6 +474,17 @@ def run(execution_id: str, store: GcsCanaryStore | None = None) -> dict[str, Any
         pipeline_pass=True,
     )
     return result
+
+
+def run(execution_id: str, store: GcsCanaryStore | None = None) -> dict[str, Any]:
+    execution_id = validate_execution_id(execution_id)
+    store = store or GcsCanaryStore()
+    spec, _ = store.read_json_or_none(execution_job_spec_object(execution_id))
+    if spec is not None:
+        if spec.get("kind") != "uploaded-track":
+            raise RuntimeError(f"Unsupported Grounded Motion job kind: {spec.get('kind')}")
+        return _run_uploaded_track(execution_id, store, spec)
+    return _run_canary(execution_id, store)
 
 
 def main() -> None:

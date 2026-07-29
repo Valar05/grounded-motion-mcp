@@ -143,9 +143,22 @@ feet, and COCO body wrists. Render registration never moves root-relative mechan
 fixtures, all 42 detailed COCO hand landmarks remain in raw and normalized evidence but are
 explicitly quarantined from mechanical judgment; body wrists remain eligible after review.
 
-## ChatGPT Vanguard production canary
+## ChatGPT production tools
 
-The production profile is deliberately narrower than the local appliance. It exposes exactly:
+The production profile accepts a real video attached in ChatGPT:
+
+- `start_motion_tracking(source_file, crop?, minimum_score?)`
+- `get_motion_status(execution_id)`
+- `get_motion_result(execution_id)`
+
+`source_file` is a top-level ChatGPT file parameter. The control service copies the temporary
+host download into the private Grounded Motion bucket before dispatch, verifies the bytes by
+SHA-256 in the GPU worker, runs the same pinned `GroundedMotionService`, and returns fresh 24-hour
+signed URLs for the raw predictions, normalized track, overlays, trajectories, manifest, receipt,
+and evidence index. The result is explicitly `tracked/unreviewed`; inference does not invent a
+human review or event lock.
+
+The immutable health canary remains available separately:
 
 - `start_vanguard_canary()`
 - `get_vanguard_canary_status(execution_id)`

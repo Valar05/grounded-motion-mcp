@@ -39,6 +39,19 @@ class FakeStore:
     def signed_url(self, object_name):
         return f"https://signed.invalid/{object_name}"
 
+    def ingest_openai_file(self, execution_id, file_payload):
+        return {
+            "object": f"executions/{execution_id}/inputs/source.mp4",
+            "gs_uri": f"gs://fixture/executions/{execution_id}/inputs/source.mp4",
+            "sha256": "source-sha",
+            "size_bytes": 123,
+            "generation": 1,
+            "content_type": "video/mp4",
+            "file_id": file_payload["file_id"],
+            "file_name": file_payload.get("file_name", "source.mp4"),
+            "mime_type": file_payload.get("mime_type", "video/mp4"),
+        }
+
 
 class FakeLauncher:
     def launch(self, execution_id):
@@ -107,6 +120,29 @@ def test_controller_starts_polls_and_signs_terminal_result(monkeypatch):
     assert result["control_urls_expire_hours"] == 24
 
 
+def test_controller_starts_real_uploaded_motion_tracking(monkeypatch):
+    monkeypatch.setenv("GROUNDED_MOTION_REVISION", "abc123")
+    monkeypatch.setenv("GROUNDED_MOTION_IMAGE_DIGEST", "sha256:image")
+    store = FakeStore()
+    controller = VanguardCanaryController(store=store, launcher=FakeLauncher())
+    started = controller.start_motion_tracking(
+        {
+            "download_url": "https://files.oaiusercontent.com/source",
+            "file_id": "file-source",
+            "file_name": "strike.mp4",
+            "mime_type": "video/mp4",
+        },
+        crop=[0, 0, 640, 480],
+    )
+    execution_id = started["execution_id"]
+    spec = store.values[f"executions/{execution_id}/job-spec.json"]
+    assert started["kind"] == "uploaded-track"
+    assert started["source"]["file_id"] == "file-source"
+    assert spec["kind"] == "uploaded-track"
+    assert spec["source"]["sha256"] == "source-sha"
+    assert spec["crop"] == [0, 0, 640, 480]
+
+
 def test_controller_result_is_not_green_while_running():
     store = FakeStore()
     controller = VanguardCanaryController(store=store, launcher=FakeLauncher())
@@ -120,7 +156,7 @@ def test_controller_result_is_not_green_while_running():
     }
 
 
-def test_production_server_exposes_only_three_canary_tools(monkeypatch):
+def test_production_server_exposes_uploaded_tracking_and_canary_tools(monkeypatch):
     from grounded_motion_mcp.production_server import (
         add_chatgpt_security_schemes,
         create_production_server,
@@ -130,6 +166,9 @@ def test_production_server_exposes_only_three_canary_tools(monkeypatch):
     server = create_production_server()
     tools = asyncio.run(server.list_tools())
     assert [tool.name for tool in tools] == [
+        "start_motion_tracking",
+        "get_motion_status",
+        "get_motion_result",
         "start_vanguard_canary",
         "get_vanguard_canary_status",
         "get_vanguard_canary_result",
@@ -137,6 +176,16 @@ def test_production_server_exposes_only_three_canary_tools(monkeypatch):
     assert all(tool.meta["securitySchemes"] == [
         {"type": "oauth2", "scopes": [CANARY_SCOPE]}
     ] for tool in tools)
+    upload_tool = tools[0]
+    assert upload_tool.meta["openai/fileParams"] == ["source_file"]
+    file_schema = upload_tool.input_schema["$defs"]["OpenAIFile"]
+    assert set(file_schema["properties"]) == {
+        "download_url",
+        "file_id",
+        "mime_type",
+        "file_name",
+    }
+    assert file_schema["required"] == ["download_url", "file_id"]
     wire_payload = {
         "jsonrpc": "2.0",
         "id": 1,

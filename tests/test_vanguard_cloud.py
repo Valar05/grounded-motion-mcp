@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import uuid
 
@@ -105,7 +106,10 @@ def test_controller_result_is_not_green_while_running():
 
 
 def test_production_server_exposes_only_three_canary_tools(monkeypatch):
-    from grounded_motion_mcp.production_server import create_production_server
+    from grounded_motion_mcp.production_server import (
+        add_chatgpt_security_schemes,
+        create_production_server,
+    )
 
     monkeypatch.setenv("GROUNDED_MOTION_RESOURCE", "https://motion.example.test/mcp")
     server = create_production_server()
@@ -118,6 +122,72 @@ def test_production_server_exposes_only_three_canary_tools(monkeypatch):
     assert all(tool.meta["securitySchemes"] == [
         {"type": "oauth2", "scopes": [CANARY_SCOPE]}
     ] for tool in tools)
+    wire_payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+            "tools": [
+                tool.model_dump(mode="json", by_alias=True, exclude_none=True)
+                for tool in tools
+            ]
+        },
+    }
+    assert add_chatgpt_security_schemes(wire_payload) is True
+    assert all(tool["securitySchemes"] == [
+        {"type": "oauth2", "scopes": [CANARY_SCOPE]}
+    ] for tool in wire_payload["result"]["tools"])
+
+
+def test_chatgpt_security_middleware_updates_the_actual_wire_response():
+    from grounded_motion_mcp.production_server import ChatGPTToolSecurityMiddleware
+
+    original_payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+            "tools": [{
+                "name": "start_vanguard_canary",
+                "inputSchema": {"type": "object", "properties": {}},
+                "_meta": {"securitySchemes": [
+                    {"type": "oauth2", "scopes": [CANARY_SCOPE]}
+                ]},
+            }]
+        },
+    }
+    original_body = json.dumps(original_payload).encode()
+
+    async def upstream(_scope, _receive, send):
+        await send({
+            "type": "http.response.start",
+            "status": 200,
+            "headers": [(b"content-type", b"application/json"), (b"content-length", b"1")],
+        })
+        split = len(original_body) // 2
+        await send({"type": "http.response.body", "body": original_body[:split], "more_body": True})
+        await send({"type": "http.response.body", "body": original_body[split:], "more_body": False})
+
+    sent = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    middleware = ChatGPTToolSecurityMiddleware(upstream)
+    asyncio.run(middleware({"type": "http", "path": "/mcp"}, receive, send))
+
+    assert [message["type"] for message in sent] == [
+        "http.response.start",
+        "http.response.body",
+    ]
+    body = sent[1]["body"]
+    tool = json.loads(body)["result"]["tools"][0]
+    assert tool["securitySchemes"] == [
+        {"type": "oauth2", "scopes": [CANARY_SCOPE]}
+    ]
+    headers = dict(sent[0]["headers"])
+    assert headers[b"content-length"] == str(len(body)).encode()
 
 
 def test_home_center_verifier_binds_email_resource_issuer_and_scope(monkeypatch):

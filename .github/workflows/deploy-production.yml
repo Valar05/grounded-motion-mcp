@@ -71,6 +71,13 @@ jobs:
             --tasks 1 --parallelism 1 --max-retries 0 --task-timeout 3600s \
             --set-env-vars "GROUNDED_MOTION_BUCKET=${BUCKET},GROUNDED_MOTION_WORKSPACE=/data,GROUNDED_MOTION_MODEL_CACHE=/models,GROUNDED_MOTION_CHECKPOINT_SHA256=${CHECKPOINT_SHA256},GROUNDED_MOTION_REVISION=${GITHUB_SHA},GROUNDED_MOTION_IMAGE_DIGEST=${{ steps.image.outputs.digest }}" \
             --quiet
+      - name: Authorize control service to launch Vanguard with overrides
+        run: |
+          gcloud run jobs add-iam-policy-binding "$JOB" \
+            --project "$PROJECT" --region "$REGION" \
+            --member "serviceAccount:$CONTROL_SERVICE_ACCOUNT" \
+            --role roles/run.jobsExecutorWithOverrides \
+            --quiet
       - name: Deploy authenticated MCP control service
         id: service
         run: |
